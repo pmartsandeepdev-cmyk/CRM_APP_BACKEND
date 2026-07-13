@@ -1,33 +1,51 @@
+// routes/carRecord.routes.js
 import express from "express";
+import { protectDriver } from "../middleware/driverAuth.middleware.js";
 import {
   createCarRecord,
   getAllCarRecords,
   getCarRecordById,
+  getAllStaff,
+  getCarRecordsByStaff,
+  getCarRecordsByRegistration,
+  getCarRecordSummary,
   updateCarRecord,
   deleteCarRecord,
   myRoutetripDriver,
-
+  updateTripLocation,
+  stopTrip,
+  getActiveTrip,
+  getTripLocations,
+  getTripRoute,
+  exportCarRecordsToExcel,
+  exportCarRecordsWithExcelJS,
 } from "../controller/carRecord.controller.js";
-import { protectDriver } from "../middleware/driverAuth.middleware.js";
 
 const router = express.Router();
 
-// ✅ Create new record
+// ============ DRIVER PROTECTED ROUTES ============
 router.post("/create", protectDriver, createCarRecord);
-// ✅ Get all records (with filters)
-router.get("/getAll", getAllCarRecords);
+router.post("/update-location", protectDriver, updateTripLocation);
+router.post("/stop-trip/:tripId", protectDriver, stopTrip);
+router.get("/active-trip", protectDriver, getActiveTrip);
+router.get("/my-trips", protectDriver, myRoutetripDriver);
+router.get("/trip-locations/:tripId", protectDriver, getTripLocations);
+router.get("/trip-route/:tripId", protectDriver, getTripRoute);
 
-// ✅ Get summary
-// router.get("/summary", getCarRecordSummary);
-
-router.get("/my-route", protectDriver, myRoutetripDriver);
-
+// ============ PUBLIC / ADMIN ROUTES ============
+router.get("/", getAllCarRecords);
 router.get("/:id", getCarRecordById);
-
-// ✅ Update record
 router.put("/:id", updateCarRecord);
-
-// ✅ Delete record
 router.delete("/:id", deleteCarRecord);
+router.get("/staff/all", getAllStaff);
+router.get("/staff/:staffId/records", getCarRecordsByStaff);
+router.get("/registration/:registrationNumber", getCarRecordsByRegistration);
+router.get("/summary/analytics", getCarRecordSummary);
 
+
+
+// Export routes
+router.get("/export/excel", exportCarRecordsToExcel);
+// Or using ExcelJS
+router.get("/export/exceljs", exportCarRecordsWithExcelJS);
 export default router;

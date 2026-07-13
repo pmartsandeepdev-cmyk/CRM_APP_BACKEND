@@ -1,8 +1,8 @@
+// models/attendance.model.js
 import mongoose from "mongoose";
 
 const attendanceSchema = new mongoose.Schema(
   {
-    
     driverId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Driver",
@@ -10,7 +10,7 @@ const attendanceSchema = new mongoose.Schema(
     },
 
     date: {
-      type: String, 
+      type: String,
       required: true,
     },
 
@@ -24,7 +24,7 @@ const attendanceSchema = new mongoose.Schema(
       address: String,
     },
     checkInSelfie: {
-      type: String, // image URL
+      type: String,
     },
 
     // Punch Out Details
@@ -42,7 +42,7 @@ const attendanceSchema = new mongoose.Schema(
 
     // Working hours
     totalHours: {
-      type: Number, // in hours (auto calculate)
+      type: Number,
       default: 0,
     },
 
@@ -53,7 +53,7 @@ const attendanceSchema = new mongoose.Schema(
       default: "Present",
     },
 
-    // Distance validation (optional)
+    // Distance validation
     isWithinOfficeRange: {
       type: Boolean,
       default: false,
@@ -68,7 +68,7 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-
-attendanceSchema.index({ userId: 1, date: 1 }, { unique: true });
+// ✅ FIXED: driverId use karo
+attendanceSchema.index({ driverId: 1, date: 1 }, { unique: true });
 
 export default mongoose.model("Attendance", attendanceSchema);

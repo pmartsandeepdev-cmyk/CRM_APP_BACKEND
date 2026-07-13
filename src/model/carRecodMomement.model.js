@@ -7,9 +7,18 @@ const carRecordSchema = new mongoose.Schema(
     driver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Driver",
-      required: true,
+   
     },
-
+     //  add this (Driver reference)
+    staff: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Staff",
+  
+    },
+    drivertrakinglocation: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "DriverLocation"
+    },
 
     name: {
       type: String,
@@ -29,12 +38,12 @@ const carRecordSchema = new mongoose.Schema(
     // 🔹 Route Type (Start / End)
     startroute: {
       type: String,
-      required: true,
+  
     },
 
     endroute: {
       type: String,
-      required: true
+    
     },
     
     startReading: {

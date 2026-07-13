@@ -1,12 +1,28 @@
+// controller/carRecord.controller.js
 import mongoose from "mongoose";
 import { CarRecord } from "../model/carRecodMomement.model.js";
-import { Driver } from "../model/driver.model.js"; // Import Driver model
+import { DriverLocation } from "../model/driverLocation.model.js";
+import { Driver } from "../model/driver.model.js";
+import Staff from "../model/staff.model.js";
 
+// ============ HELPER FUNCTIONS ============
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+}
 
+function toRad(deg) {
+  return deg * (Math.PI / 180);
+}
 
-
-
-// ✅ Create a new car record with COMPLETE driver info population (carNumber optional)
+// ============ CREATE CAR RECORD WITH TRACKING ============
 export const createCarRecord = async (req, res) => {
   try {
     const {
@@ -21,19 +37,22 @@ export const createCarRecord = async (req, res) => {
       endReading,
       petrol,
       visit,
-      maintenance
+      maintenance,
+      staffId,
+      latitude,
+      longitude,
     } = req.body;
 
-    // Logged in driver ID from token
     const driverId = req.driver._id;
 
-    if (!name || !startroute || !endroute) {
+    if (staffId && !mongoose.Types.ObjectId.isValid(staffId)) {
       return res.status(400).json({
         success: false,
-        message: "Name, start route, and end route are required",
+        message: "Invalid staff ID",
       });
     }
 
+    // Create Car Record
     const carRecord = new CarRecord({
       carNumber,
       name,
@@ -47,21 +66,67 @@ export const createCarRecord = async (req, res) => {
       petrol,
       visit,
       maintenance,
-      driver: driverId,   // ✅ auto assign logged-in driver
+      driver: driverId,
+      staff: staffId || null,
+      tripStatus: 'active',
+      startTime: new Date(),
       date: new Date(),
     });
 
     await carRecord.save();
 
-    await carRecord.populate({
-      path: "driver",
-      select: "driverName email role"
+    // Create Initial Location
+    let locationData = null;
+    if (latitude && longitude) {
+      locationData = new DriverLocation({
+        driver: driverId,
+        trip: carRecord._id,
+        latitude: latitude,
+        longitude: longitude,
+        isActive: true,
+        locationTimestamp: new Date(),
+        createdAt: new Date(),
+      });
+      await locationData.save();
+
+      carRecord.drivertrakinglocation = locationData._id;
+      await carRecord.save();
+    }
+
+    // Update Driver Status
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'active',
+      currentLocation: locationData ? {
+        latitude: latitude,
+        longitude: longitude,
+        timestamp: new Date(),
+      } : undefined,
     });
+
+    // Populate Response
+    await carRecord.populate([
+      {
+        path: "driver",
+        select: "driverName email profile vehicle license rc status role"
+      },
+      {
+        path: "staff",
+        select: "name email phone role createdAt"
+      },
+      {
+        path: "drivertrakinglocation",
+        select: "latitude longitude speed heading accuracy createdAt"
+      }
+    ]);
 
     res.status(201).json({
       success: true,
-      message: "Driver route created successfully",
-      data: carRecord
+      message: "Driver route created successfully and tracking started",
+      data: {
+        ...carRecord.toObject(),
+        trackingStatus: 'active',
+        locationTracking: locationData ? true : false,
+      }
     });
 
   } catch (error) {
@@ -73,7 +138,324 @@ export const createCarRecord = async (req, res) => {
     });
   }
 };
-// ✅ Get all car records with complete driver vehicle info
+
+// ============ UPDATE LOCATION FOR TRIP ============
+export const updateTripLocation = async (req, res) => {
+  try {
+    const { tripId, latitude, longitude, speed, heading, accuracy } = req.body;
+    const driverId = req.driver._id;
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: `Trip is ${trip.tripStatus}, cannot update location`,
+      });
+    }
+
+    const location = new DriverLocation({
+      driver: driverId,
+      trip: tripId,
+      latitude,
+      longitude,
+      speed: speed || 0,
+      heading: heading || 0,
+      accuracy: accuracy || 0,
+      isActive: true,
+      locationTimestamp: new Date(),
+      createdAt: new Date(),
+    });
+
+    await location.save();
+
+    await CarRecord.findByIdAndUpdate(tripId, {
+      drivertrakinglocation: location._id,
+    });
+
+    await Driver.findByIdAndUpdate(driverId, {
+      currentLocation: {
+        latitude,
+        longitude,
+        timestamp: new Date(),
+      },
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "Location updated successfully",
+      data: location,
+    });
+
+  } catch (error) {
+    console.error("Update location error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update location",
+      error: error.message,
+    });
+  }
+};
+
+// ============ STOP TRIP / COMPLETE TRIP ============
+export const stopTrip = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const driverId = req.driver._id;
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Trip is already completed",
+      });
+    }
+
+    const endTime = new Date();
+    const startTime = trip.startTime || trip.createdAt;
+    const totalDuration = Math.round((endTime - startTime) / (1000 * 60));
+
+    trip.tripStatus = 'completed';
+    trip.endTime = endTime;
+    trip.totalDuration = totalDuration;
+    await trip.save();
+
+    await DriverLocation.updateMany(
+      { trip: tripId, isActive: true },
+      { isActive: false }
+    );
+
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'offline',
+    });
+
+    const totalLocations = await DriverLocation.countDocuments({ trip: tripId });
+    const latestLocation = await DriverLocation.findOne({ trip: tripId })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      message: "Trip stopped successfully",
+      data: {
+        trip,
+        summary: {
+          totalDuration: `${totalDuration} minutes`,
+          totalLocations,
+          startTime,
+          endTime,
+          latestLocation,
+        }
+      },
+    });
+
+  } catch (error) {
+    console.error("Stop trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to stop trip",
+      error: error.message,
+    });
+  }
+};
+
+// ============ GET ACTIVE TRIP ============
+export const getActiveTrip = async (req, res) => {
+  try {
+    const driverId = req.driver._id;
+
+    const activeTrip = await CarRecord.findOne({
+      driver: driverId,
+      tripStatus: 'active',
+    })
+      .populate({
+        path: 'driver',
+        select: 'driverName email vehicle status'
+      })
+      .populate({
+        path: 'staff',
+        select: 'name email phone'
+      })
+      .populate({
+        path: 'drivertrakinglocation',
+        select: 'latitude longitude speed heading accuracy createdAt'
+      })
+      .sort({ createdAt: -1 });
+
+    if (!activeTrip) {
+      return res.status(200).json({
+        success: true,
+        data: null,
+        message: "No active trip found",
+      });
+    }
+
+    const latestLocation = await DriverLocation.findOne({
+      trip: activeTrip._id,
+    })
+      .sort({ createdAt: -1 })
+      .limit(1);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        trip: activeTrip,
+        latestLocation,
+        isTracking: true,
+      },
+    });
+
+  } catch (error) {
+    console.error("Get active trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get active trip",
+      error: error.message,
+    });
+  }
+};
+
+// ============ GET TRIP LOCATIONS ============
+export const getTripLocations = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const { page = 1, limit = 100 } = req.query;
+
+    const trip = await CarRecord.findById(tripId);
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Trip not found",
+      });
+    }
+
+    const locations = await DriverLocation.find({ trip: tripId })
+      .sort({ createdAt: 1 })
+      .skip((parseInt(page) - 1) * parseInt(limit))
+      .limit(parseInt(limit));
+
+    const total = await DriverLocation.countDocuments({ trip: tripId });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        trip: {
+          id: trip._id,
+          carNumber: trip.carNumber,
+          tripStatus: trip.tripStatus,
+          startTime: trip.startTime,
+          endTime: trip.endTime,
+        },
+        locations,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Get trip locations error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get trip locations",
+      error: error.message,
+    });
+  }
+};
+
+// ============ GET TRIP ROUTE (For Map) ============
+export const getTripRoute = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+
+    const locations = await DriverLocation.find({ trip: tripId })
+      .sort({ createdAt: 1 })
+      .select('latitude longitude speed heading accuracy createdAt');
+
+    const trip = await CarRecord.findById(tripId)
+      .select('carNumber tripStatus startTime endTime');
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Trip not found",
+      });
+    }
+
+    const route = locations.map(loc => ({
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      timestamp: loc.createdAt,
+      speed: loc.speed,
+      accuracy: loc.accuracy,
+    }));
+
+    let totalDistance = 0;
+    if (route.length >= 2) {
+      for (let i = 1; i < route.length; i++) {
+        const prev = route[i - 1];
+        const curr = route[i];
+        const distance = calculateDistance(
+          prev.latitude, prev.longitude,
+          curr.latitude, curr.longitude
+        );
+        totalDistance += distance;
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        trip: {
+          id: trip._id,
+          carNumber: trip.carNumber,
+          status: trip.tripStatus,
+          startTime: trip.startTime,
+          endTime: trip.endTime,
+        },
+        route,
+        summary: {
+          totalPoints: route.length,
+          totalDistance: Math.round(totalDistance * 100) / 100,
+          totalDistanceMeters: Math.round(totalDistance * 1000),
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Get trip route error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to get trip route",
+      error: error.message,
+    });
+  }
+};
+
+// ============ GET ALL CAR RECORDS ============
 export const getAllCarRecords = async (req, res) => {
   try {
     const {
@@ -85,25 +467,24 @@ export const getAllCarRecords = async (req, res) => {
       endDate,
       sector,
       driver,
+      staffId
     } = req.query;
 
-    // Build filter
     const filter = {};
 
     if (carNumber) filter.carNumber = { $regex: carNumber, $options: "i" };
     if (movementPurpose) filter.movementPurpose = movementPurpose;
     if (sector) filter.sector = { $regex: sector, $options: "i" };
     if (driver) filter.driver = driver;
+    if (staffId) filter.staff = staffId;
     if (startDate || endDate) {
       filter.date = {};
       if (startDate) filter.date.$gte = new Date(startDate);
       if (endDate) filter.date.$lte = new Date(endDate);
     }
 
-    // Pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Get records with complete driver population
     const [records, total] = await Promise.all([
       CarRecord.find(filter)
         .sort({ createdAt: -1 })
@@ -112,43 +493,52 @@ export const getAllCarRecords = async (req, res) => {
         .populate({
           path: 'driver',
           select: 'driverName email profile vehicle license rc status role',
-          // Populate all vehicle-related fields
         })
-        .populate('createdBy', 'username email'),
+        .populate({
+          path: 'staff',
+          select: 'name email phone role createdAt'
+        })
+        .populate('createdBy', 'username email')
+        .populate({
+          path: 'drivertrakinglocation',
+          select: 'latitude longitude speed heading accuracy createdAt'
+        }),
       CarRecord.countDocuments(filter),
     ]);
 
-    // Format response with complete vehicle information
     const formattedRecords = records.map(record => {
       const recordObj = record.toObject();
+      
       if (recordObj.driver) {
-        // Extract registration numbers from different possible sources
         const vehicleRegistration = recordObj.driver.vehicle?.registrationNumber;
         const rcNumber = recordObj.driver.rc?.number;
         
         recordObj.driver.vehicleInfo = {
-          // Vehicle details
           type: recordObj.driver.vehicle?.type || null,
           brand: recordObj.driver.vehicle?.brand || null,
           model: recordObj.driver.vehicle?.model || null,
-          
-          // Registration numbers
           vehicleRegistrationNumber: vehicleRegistration || null,
           rcNumber: rcNumber || null,
-          
-          // Primary registration number (prioritize vehicle registration, then RC)
           registrationNumber: vehicleRegistration || rcNumber || null,
-          
-          // Verification status
           isRegistrationVerified: !!(vehicleRegistration),
           isRCVerified: recordObj.driver.rc?.verified || false,
-          
-          // License information
           licenseNumber: recordObj.driver.license?.number || null,
           licenseCategory: recordObj.driver.license?.category || null,
           isLicenseVerified: recordObj.driver.license?.verified || false,
         };
       }
+      
+      if (recordObj.staff) {
+        recordObj.staffInfo = {
+          id: recordObj.staff._id,
+          name: recordObj.staff.name,
+          email: recordObj.staff.email,
+          phone: recordObj.staff.phone,
+          role: recordObj.staff.role,
+          joinedAt: recordObj.staff.createdAt
+        };
+      }
+      
       return recordObj;
     });
 
@@ -172,7 +562,7 @@ export const getAllCarRecords = async (req, res) => {
   }
 };
 
-// ✅ Get car record by ID with complete driver vehicle info
+// ============ GET CAR RECORD BY ID ============
 export const getCarRecordById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -189,7 +579,15 @@ export const getCarRecordById = async (req, res) => {
         path: 'driver',
         select: 'driverName email profile vehicle license rc status role createdAt'
       })
-      .populate('createdBy', 'username email');
+      .populate({
+        path: 'staff',
+        select: 'name email phone role createdAt'
+      })
+      .populate('createdBy', 'username email')
+      .populate({
+        path: 'drivertrakinglocation',
+        select: 'latitude longitude speed heading accuracy createdAt'
+      });
 
     if (!record) {
       return res.status(404).json({
@@ -198,37 +596,39 @@ export const getCarRecordById = async (req, res) => {
       });
     }
 
-    // Format response with complete vehicle information
     const response = record.toObject();
+    
     if (response.driver) {
       const vehicleRegistration = response.driver.vehicle?.registrationNumber;
       const rcNumber = response.driver.rc?.number;
       
       response.driver.vehicleInfo = {
-        // Vehicle specifications
         type: response.driver.vehicle?.type || null,
         brand: response.driver.vehicle?.brand || null,
         model: response.driver.vehicle?.model || null,
-        
-        // All registration numbers
         vehicleRegistrationNumber: vehicleRegistration || null,
         rcNumber: rcNumber || null,
-        
-        // Combined registration info
         registrationNumber: vehicleRegistration || rcNumber || null,
         hasRegistration: !!(vehicleRegistration || rcNumber),
-        
-        // Verification details
         isVehicleRegistered: !!vehicleRegistration,
         isRCVerified: response.driver.rc?.verified || false,
         isFullyVerified: (!!vehicleRegistration && response.driver.rc?.verified) || false,
-        
-        // License details
         license: {
           number: response.driver.license?.number || null,
           category: response.driver.license?.category || null,
           verified: response.driver.license?.verified || false,
         },
+      };
+    }
+    
+    if (response.staff) {
+      response.staffInfo = {
+        id: response.staff._id,
+        name: response.staff.name,
+        email: response.staff.email,
+        phone: response.staff.phone,
+        role: response.staff.role,
+        joinedAt: response.staff.createdAt
       };
     }
 
@@ -246,74 +646,125 @@ export const getCarRecordById = async (req, res) => {
   }
 };
 
-// ✅ Get all drivers with complete vehicle and RC information
-export const getAllDriversWithVehicleInfo = async (req, res) => {
+// ============ GET ALL STAFF ============
+export const getAllStaff = async (req, res) => {
   try {
-    const drivers = await Driver.find({ status: 'active' })
-      .select('driverName email profile vehicle license rc status role')
-      .sort({ driverName: 1 });
-
-    const formattedDrivers = drivers.map(driver => {
-      const driverObj = driver.toObject();
-      const vehicleRegistration = driverObj.vehicle?.registrationNumber;
-      const rcNumber = driverObj.rc?.number;
-      
-      return {
-        _id: driverObj._id,
-        driverName: driverObj.driverName,
-        email: driverObj.email,
-        profile: driverObj.profile,
-        status: driverObj.status,
-        role: driverObj.role,
-        
-        // Complete vehicle information
-        vehicle: {
-          type: driverObj.vehicle?.type || null,
-          brand: driverObj.vehicle?.brand || null,
-          model: driverObj.vehicle?.model || null,
-          registrationNumber: vehicleRegistration || null,
-        },
-        
-        // RC information
-        rc: {
-          number: rcNumber || null,
-          verified: driverObj.rc?.verified || false,
-        },
-        
-        // License information
-        license: {
-          number: driverObj.license?.number || null,
-          category: driverObj.license?.category || null,
-          verified: driverObj.license?.verified || false,
-        },
-        
-        // Combined registration info
-        registrationInfo: {
-          primaryNumber: vehicleRegistration || rcNumber || null,
-          vehicleRegistrationNumber: vehicleRegistration,
-          rcNumber: rcNumber,
-          hasValidRegistration: !!(vehicleRegistration || rcNumber),
-          isFullyVerified: (!!vehicleRegistration && driverObj.rc?.verified) || false,
-        }
-      };
+    const { role, page = 1, limit = 50 } = req.query;
+    
+    let query = {};
+    if (role) query.role = role;
+    
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    const staff = await Staff.find(query)
+      .select('name email phone role createdAt')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+    
+    const total = await Staff.countDocuments(query);
+    
+    res.status(200).json({
+      success: true,
+      data: staff,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
     });
+  } catch (error) {
+    console.error("Error fetching staff:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch staff members",
+      error: error.message
+    });
+  }
+};
+
+// ============ GET CAR RECORDS BY STAFF ============
+export const getCarRecordsByStaff = async (req, res) => {
+  try {
+    const { staffId } = req.params;
+    const { startDate, endDate, page = 1, limit = 10 } = req.query;
+
+    if (!mongoose.Types.ObjectId.isValid(staffId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid staff ID",
+      });
+    }
+
+    const staff = await Staff.findById(staffId).select('name email phone role');
+    if (!staff) {
+      return res.status(404).json({
+        success: false,
+        message: "Staff member not found",
+      });
+    }
+
+    const filter = { staff: staffId };
+    if (startDate && endDate) {
+      filter.date = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [records, total] = await Promise.all([
+      CarRecord.find(filter)
+        .sort({ date: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .populate({
+          path: 'driver',
+          select: 'driverName email vehicle license rc profile'
+        })
+        .populate({
+          path: 'staff',
+          select: 'name email phone role'
+        })
+        .populate('createdBy', 'username email')
+        .populate({
+          path: 'drivertrakinglocation',
+          select: 'latitude longitude speed heading accuracy createdAt'
+        }),
+      CarRecord.countDocuments(filter),
+    ]);
 
     res.status(200).json({
       success: true,
-      data: formattedDrivers,
-      count: formattedDrivers.length,
+      data: {
+        staff: {
+          _id: staff._id,
+          name: staff.name,
+          email: staff.email,
+          phone: staff.phone,
+          role: staff.role
+        },
+        records: records,
+        summary: {
+          totalRecords: total,
+          totalPages: Math.ceil(total / parseInt(limit)),
+          currentPage: parseInt(page)
+        }
+      },
     });
   } catch (error) {
-    console.error("Error fetching drivers:", error);
+    console.error("Error fetching records by staff:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to fetch drivers",
+      message: "Failed to fetch records",
       error: error.message,
     });
   }
 };
 
-// ✅ Get car records by vehicle registration number or RC number
+// ============ GET CAR RECORDS BY REGISTRATION ============
 export const getCarRecordsByRegistration = async (req, res) => {
   try {
     const { registrationNumber } = req.params;
@@ -328,7 +779,6 @@ export const getCarRecordsByRegistration = async (req, res) => {
 
     const upperRegNumber = registrationNumber.toUpperCase();
     
-    // Find driver with matching registration number (either in vehicle or RC)
     const driver = await Driver.findOne({
       $or: [
         { 'vehicle.registrationNumber': upperRegNumber },
@@ -343,7 +793,6 @@ export const getCarRecordsByRegistration = async (req, res) => {
       });
     }
 
-    // Build filter for car records
     const filter = { driver: driver._id };
     if (startDate && endDate) {
       filter.date = {
@@ -363,11 +812,18 @@ export const getCarRecordsByRegistration = async (req, res) => {
           path: 'driver',
           select: 'driverName email vehicle license rc profile'
         })
-        .populate('createdBy', 'username email'),
+        .populate({
+          path: 'staff',
+          select: 'name email phone role'
+        })
+        .populate('createdBy', 'username email')
+        .populate({
+          path: 'drivertrakinglocation',
+          select: 'latitude longitude speed heading accuracy createdAt'
+        }),
       CarRecord.countDocuments(filter),
     ]);
 
-    // Format driver info with complete registration details
     const driverInfo = driver.toObject();
     const vehicleRegistration = driverInfo.vehicle?.registrationNumber;
     const rcNumber = driverInfo.rc?.number;
@@ -421,12 +877,11 @@ export const getCarRecordsByRegistration = async (req, res) => {
   }
 };
 
-// ✅ Get summary with vehicle registration info
+// ============ GET CAR RECORD SUMMARY ============
 export const getCarRecordSummary = async (req, res) => {
   try {
-    const { startDate, endDate, carNumber } = req.query;
+    const { startDate, endDate, carNumber, staffId } = req.query;
 
-    // Build filter
     const filter = {};
     if (startDate && endDate) {
       filter.date = {
@@ -435,8 +890,8 @@ export const getCarRecordSummary = async (req, res) => {
       };
     }
     if (carNumber) filter.carNumber = carNumber;
+    if (staffId && mongoose.Types.ObjectId.isValid(staffId)) filter.staff = mongoose.Types.ObjectId(staffId);
 
-    // Aggregation pipeline with driver lookup
     const summary = await CarRecord.aggregate([
       { $match: filter },
       {
@@ -449,6 +904,15 @@ export const getCarRecordSummary = async (req, res) => {
       },
       { $unwind: { path: "$driverInfo", preserveNullAndEmptyArrays: true } },
       {
+        $lookup: {
+          from: "staffs",
+          localField: "staff",
+          foreignField: "_id",
+          as: "staffInfo"
+        }
+      },
+      { $unwind: { path: "$staffInfo", preserveNullAndEmptyArrays: true } },
+      {
         $group: {
           _id: "$carNumber",
           totalTrips: { $sum: 1 },
@@ -457,6 +921,7 @@ export const getCarRecordSummary = async (req, res) => {
           totalMaintenanceAmount: { $sum: "$maintenance.amount" },
           averageKmPerTrip: { $avg: "$totalKm" },
           drivers: { $addToSet: "$driverInfo.driverName" },
+          staffMembers: { $addToSet: "$staffInfo.name" },
           vehicleRegistrations: { 
             $addToSet: "$driverInfo.vehicle.registrationNumber" 
           },
@@ -475,6 +940,8 @@ export const getCarRecordSummary = async (req, res) => {
           averageKmPerTrip: { $round: ["$averageKmPerTrip", 2] },
           associatedDrivers: { $size: "$drivers" },
           driverNames: "$drivers",
+          associatedStaff: { $size: "$staffMembers" },
+          staffNames: "$staffMembers",
           vehicleRegistrations: "$vehicleRegistrations",
           rcNumbers: "$rcNumbers",
         },
@@ -496,7 +963,7 @@ export const getCarRecordSummary = async (req, res) => {
   }
 };
 
-// ✅ Update car record
+// ============ UPDATE CAR RECORD ============
 export const updateCarRecord = async (req, res) => {
   try {
     const { id } = req.params;
@@ -509,6 +976,18 @@ export const updateCarRecord = async (req, res) => {
       });
     }
 
+    if (updateData.staffId && !mongoose.Types.ObjectId.isValid(updateData.staffId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid staff ID",
+      });
+    }
+
+    if (updateData.staffId) {
+      updateData.staff = updateData.staffId;
+      delete updateData.staffId;
+    }
+
     const updatedRecord = await CarRecord.findByIdAndUpdate(
       id,
       { $set: updateData },
@@ -518,7 +997,15 @@ export const updateCarRecord = async (req, res) => {
         path: 'driver',
         select: 'driverName email vehicle license rc'
       })
-      .populate('createdBy', 'username email');
+      .populate({
+        path: 'staff',
+        select: 'name email phone role'
+      })
+      .populate('createdBy', 'username email')
+      .populate({
+        path: 'drivertrakinglocation',
+        select: 'latitude longitude speed heading accuracy createdAt'
+      });
 
     if (!updatedRecord) {
       return res.status(404).json({
@@ -542,7 +1029,7 @@ export const updateCarRecord = async (req, res) => {
   }
 };
 
-// ✅ Delete car record
+// ============ DELETE CAR RECORD ============
 export const deleteCarRecord = async (req, res) => {
   try {
     const { id } = req.params;
@@ -553,6 +1040,9 @@ export const deleteCarRecord = async (req, res) => {
         message: "Invalid record ID",
       });
     }
+
+    // Delete associated locations too
+    await DriverLocation.deleteMany({ trip: id });
 
     const deletedRecord = await CarRecord.findByIdAndDelete(id);
 
@@ -577,6 +1067,7 @@ export const deleteCarRecord = async (req, res) => {
   }
 };
 
+// ============ GET CURRENT DRIVER'S TRIPS ============
 export const myRoutetripDriver = async (req, res) => {
   try {
     const driverId = req.driver._id;
@@ -586,7 +1077,6 @@ export const myRoutetripDriver = async (req, res) => {
       driver: driverId,
     };
 
-    // optional date filter
     if (date) {
       const startOfDay = new Date(date);
       startOfDay.setHours(0, 0, 0, 0);
@@ -602,9 +1092,13 @@ export const myRoutetripDriver = async (req, res) => {
 
     const trips = await CarRecord.find(filter)
       .sort({ createdAt: -1 })
-      .populate("driver", "driverName email vehicle");
+      .populate("driver", "driverName email vehicle")
+      .populate("staff", "name email phone role")
+      .populate({
+        path: 'drivertrakinglocation',
+        select: 'latitude longitude speed heading accuracy createdAt'
+      });
 
-    // total km summary
     const totalKm = trips.reduce((sum, trip) => {
       return sum + (trip.totalKm || 0);
     }, 0);
@@ -617,10 +1111,185 @@ export const myRoutetripDriver = async (req, res) => {
     });
   } catch (error) {
     console.error("MY ROUTE ERROR =>", error);
-
     res.status(500).json({
       success: false,
       message: error.message,
+    });
+  }
+};
+
+// Method 1: Using xlsx library (simpler)
+export const exportCarRecordsToExcel = async (req, res) => {
+  try {
+    // Fetch all car records with populated references
+    const records = await CarRecord.find()
+      .populate("driver", "name phone") // Adjust fields as per your Driver schema
+      .populate("staff", "name designation") // Adjust fields as per your Staff schema
+      .populate("drivertrakinglocation", "latitude longitude address") // Adjust fields
+      .populate("createdBy", "name email") // Adjust fields
+      .sort({ createdAt: -1 });
+
+    // Transform data for Excel
+    const excelData = records.map((record, index) => ({
+      "S.No": index + 1,
+      "Driver Name": record.driver?.name || "N/A",
+      "Staff Name": record.staff?.name || record.staffName || "N/A",
+      "Vehicle Name": record.name || "N/A",
+      "Sector": record.sector || "N/A",
+      "Movement Purpose": record.movementPurpose || "N/A",
+      "Start Route": record.startroute || "N/A",
+      "End Route": record.endroute || "N/A",
+      "Start Reading": record.startReading || "N/A",
+      "End Reading": record.endReading || "N/A",
+      "Total KM": record.totalKm || "N/A",
+      "Petrol Refilling Reading": record.petrol?.refillingReading || "N/A",
+      "Petrol Amount": record.petrol?.amount || "N/A",
+      "Visit Notes": record.visit?.notes || "N/A",
+      "Close Reading (Home)": record.visit?.closeReadingHome || "N/A",
+      "Maintenance Reading": record.maintenance?.reading || "N/A",
+      "Maintenance Amount": record.maintenance?.amount || "N/A",
+      "Maintenance Work Details": record.maintenance?.workDetails || "N/A",
+      "Created By": record.createdBy?.name || "N/A",
+      "Date": record.date ? new Date(record.date).toLocaleDateString() : "N/A",
+      "Created At": record.createdAt ? new Date(record.createdAt).toLocaleString() : "N/A",
+      "Updated At": record.updatedAt ? new Date(record.updatedAt).toLocaleString() : "N/A",
+    }));
+
+    // Create workbook and worksheet
+    const workbook = xlsx.utils.book_new();
+    const worksheet = xlsx.utils.json_to_sheet(excelData);
+
+    // Auto-size columns (optional)
+    const maxWidth = 20;
+    worksheet["!cols"] = Object.keys(excelData[0] || {}).map(() => ({
+      wch: maxWidth,
+    }));
+
+    xlsx.utils.book_append_sheet(workbook, worksheet, "Car Records");
+
+    // Generate buffer
+    const buffer = xlsx.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+    // Set response headers
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=car-records-${new Date().toISOString().split("T")[0]}.xlsx`
+    );
+
+    res.send(buffer);
+  } catch (error) {
+    console.error("Export error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to export car records",
+      error: error.message,
+    });
+  }
+};
+
+// Method 2: Using ExcelJS (more features like styling)
+export const exportCarRecordsWithExcelJS = async (req, res) => {
+  try {
+    const records = await CarRecord.find()
+      .populate("driver", "name phone")
+      .populate("staff", "name designation")
+      .populate("drivertrakinglocation", "latitude longitude address")
+      .populate("createdBy", "name email")
+      .sort({ createdAt: -1 });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Car Records");
+
+    // Define columns
+    worksheet.columns = [
+      { header: "S.No", key: "sno", width: 8 },
+      { header: "Driver Name", key: "driver", width: 20 },
+      { header: "Staff Name", key: "staff", width: 20 },
+      { header: "Vehicle Name", key: "name", width: 20 },
+      { header: "Sector", key: "sector", width: 15 },
+      { header: "Movement Purpose", key: "purpose", width: 18 },
+      { header: "Start Route", key: "startRoute", width: 25 },
+      { header: "End Route", key: "endRoute", width: 25 },
+      { header: "Start Reading", key: "startReading", width: 15 },
+      { header: "End Reading", key: "endReading", width: 15 },
+      { header: "Total KM", key: "totalKm", width: 12 },
+      { header: "Petrol Reading", key: "petrolReading", width: 15 },
+      { header: "Petrol Amount", key: "petrolAmount", width: 15 },
+      { header: "Visit Notes", key: "visitNotes", width: 25 },
+      { header: "Close Reading", key: "closeReading", width: 15 },
+      { header: "Maint. Reading", key: "maintReading", width: 15 },
+      { header: "Maint. Amount", key: "maintAmount", width: 15 },
+      { header: "Work Details", key: "workDetails", width: 25 },
+      { header: "Created By", key: "createdBy", width: 20 },
+      { header: "Date", key: "date", width: 15 },
+      { header: "Created At", key: "createdAt", width: 20 },
+      { header: "Updated At", key: "updatedAt", width: 20 },
+    ];
+
+    // Style header row
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFE0E0E0" },
+    };
+    worksheet.getRow(1).alignment = { horizontal: "center" };
+
+    // Add data
+    records.forEach((record, index) => {
+      worksheet.addRow({
+        sno: index + 1,
+        driver: record.driver?.name || "N/A",
+        staff: record.staff?.name || record.staffName || "N/A",
+        name: record.name || "N/A",
+        sector: record.sector || "N/A",
+        purpose: record.movementPurpose || "N/A",
+        startRoute: record.startroute || "N/A",
+        endRoute: record.endroute || "N/A",
+        startReading: record.startReading || "N/A",
+        endReading: record.endReading || "N/A",
+        totalKm: record.totalKm || "N/A",
+        petrolReading: record.petrol?.refillingReading || "N/A",
+        petrolAmount: record.petrol?.amount || "N/A",
+        visitNotes: record.visit?.notes || "N/A",
+        closeReading: record.visit?.closeReadingHome || "N/A",
+        maintReading: record.maintenance?.reading || "N/A",
+        maintAmount: record.maintenance?.amount || "N/A",
+        workDetails: record.maintenance?.workDetails || "N/A",
+        createdBy: record.createdBy?.name || "N/A",
+        date: record.date ? new Date(record.date).toLocaleDateString() : "N/A",
+        createdAt: record.createdAt
+          ? new Date(record.createdAt).toLocaleString()
+          : "N/A",
+        updatedAt: record.updatedAt
+          ? new Date(record.updatedAt).toLocaleString()
+          : "N/A",
+      });
+    });
+
+    // Generate buffer
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=car-records-${new Date().toISOString().split("T")[0]}.xlsx`
+    );
+
+    res.send(buffer);
+  } catch (error) {
+    console.error("Export error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to export car records",
+      error: error.message,
     });
   }
 };

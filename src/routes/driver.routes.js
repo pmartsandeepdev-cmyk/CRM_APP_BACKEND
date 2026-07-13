@@ -1,7 +1,6 @@
 import Router from "express";
 import { verifyJWT, authorize  } from "../middleware/auth.middleware.js";
 import { createDriver, getAllDrivers, getCurrentDriver, getDriverById, getDriverData, resetPassword, sendPasswordResetEmail, updatePassword } from "../controller/driver.controller.js";
-// import { getActiveDriversOnMap, getAllDriversWithLocations, getDriverRouteHistory } from "../controllers/OrderDispatch.controller.js";
     
 
 
@@ -14,11 +13,7 @@ router.route("/reset-password").post(resetPassword);
 
 router.get("/getById/:id", getDriverById);
 
-// Protected routes (authentication required)     
-
-
 // router.route("/logout").post(verifyJWT, logoutUser); 
-
 
 router.route("/update-password").post(verifyJWT, updatePassword);
 

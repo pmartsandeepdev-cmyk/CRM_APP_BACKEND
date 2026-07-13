@@ -19,15 +19,13 @@ const httpServer = createServer(app);
 
 const allowedOrigins = [
     "http://localhost:5173",
-    "http://localhost:8081",  // Remove the space before http
+    "http://localhost:8081", 
     "http://localhost:5174",
     "http://localhost:5176",
+    "http://admin.thepropmart.com",
     "http://localhost:8082",
     "http://localhost:19006",  // Expo web default
     "http://localhost:19000",  // Expo dev
-    "https://hardikexport.com",
-    "https://admin.hardikexport.com",
-    "https://www.hardikexport.com"
 ]; 
 
 
@@ -61,13 +59,17 @@ import driverRoutes from './src/routes/driver.routes.js';
 import driverLoginRoutes from './src/routes/driverLogin.routes.js'
 import routedriverRoutes  from './src/routes/carRecord.routes.js'
 import attandenceRoutes from './src/routes/attendance.routes.js'
+import staffRoutes  from './src/routes/staff.routes.js'
+import driverlivetrackingRoutes from './src/routes/driverLocation.routes.js'
 
 // Make sure these are mounted correctly
 app.use('/admin', adminRoutes);
 app.use('/driver', driverRoutes);
 app.use('/driver-login' , driverLoginRoutes); 
 app.use('/routedriver' , routedriverRoutes);
-app.use('/attandence', attandenceRoutes)
+app.use('/api/attendance', attandenceRoutes)
+app.use('/staff', staffRoutes)
+app.use('/driver-livetraking', driverlivetrackingRoutes)
 // ==================== SOCKET.IO ====================
 
 //  Store active drivers in memory
