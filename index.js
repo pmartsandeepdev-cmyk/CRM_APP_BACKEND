@@ -22,7 +22,7 @@ const allowedOrigins = [
     "http://localhost:8081", 
     "http://localhost:5174",
     "http://localhost:5176",
-    "http://admin.thepropmart.com",
+    "https://admin.thepropmart.com",
     "http://localhost:8082",
     "http://localhost:19006",  // Expo web default
     "http://localhost:19000",  // Expo dev
