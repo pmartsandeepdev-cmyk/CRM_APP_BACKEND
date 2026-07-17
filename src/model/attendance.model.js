@@ -1,4 +1,3 @@
-// models/attendance.model.js
 import mongoose from "mongoose";
 
 const attendanceSchema = new mongoose.Schema(
@@ -7,68 +6,38 @@ const attendanceSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Driver",
       required: true,
+      index: true,
     },
-
     date: {
       type: String,
       required: true,
+      index: true,
     },
-
-    // Punch In Details
-    checkInTime: {
-      type: String,
-    },
+    checkInTime: { type: String },
     checkInLocation: {
       latitude: Number,
       longitude: Number,
       address: String,
     },
-    checkInSelfie: {
-      type: String,
-    },
-
-    // Punch Out Details
-    checkOutTime: {
-      type: String,
-    },
+    checkInSelfie: { type: String },
+    checkOutTime: { type: String },
     checkOutLocation: {
       latitude: Number,
       longitude: Number,
       address: String,
     },
-    checkOutSelfie: {
-      type: String,
-    },
-
-    // Working hours
-    totalHours: {
-      type: Number,
-      default: 0,
-    },
-
-    // Status
+    checkOutSelfie: { type: String },
+    totalHours: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ["Present", "Absent", "Half Day", "Leave"],
       default: "Present",
     },
-
-    // Distance validation
-    isWithinOfficeRange: {
-      type: Boolean,
-      default: false,
-    },
-
-    // Late mark
-    isLate: {
-      type: Boolean,
-      default: false,
-    },
+    isWithinOfficeRange: { type: Boolean, default: false },
+    isLate: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-// ✅ FIXED: driverId use karo
-attendanceSchema.index({ driverId: 1, date: 1 }, { unique: true });
 
 export default mongoose.model("Attendance", attendanceSchema);

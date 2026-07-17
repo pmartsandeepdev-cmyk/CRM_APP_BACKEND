@@ -22,7 +22,7 @@ function toRad(deg) {
   return deg * (Math.PI / 180);
 }
 
-// ============ CREATE CAR RECORD WITH TRACKING ============
+
 export const createCarRecord = async (req, res) => {
   try {
     const {
@@ -37,13 +37,17 @@ export const createCarRecord = async (req, res) => {
       endReading,
       petrol,
       visit,
+      startkm,
+      endkm,
       maintenance,
       staffId,
       latitude,
       longitude,
     } = req.body;
 
-    const driverId = req.driver._id;
+    const driverId = req.driver._id; // ✅ Driver ID from token
+
+    console.log(`📤 Creating trip for driver: ${driverId}`);
 
     if (staffId && !mongoose.Types.ObjectId.isValid(staffId)) {
       return res.status(400).json({
@@ -52,7 +56,7 @@ export const createCarRecord = async (req, res) => {
       });
     }
 
-    // Create Car Record
+    // Create Car Record with driver
     const carRecord = new CarRecord({
       carNumber,
       name,
@@ -65,8 +69,10 @@ export const createCarRecord = async (req, res) => {
       endReading,
       petrol,
       visit,
+      startkm,
+      endkm,
       maintenance,
-      driver: driverId,
+      driver: driverId, // ✅ Driver assigned
       staff: staffId || null,
       tripStatus: 'active',
       startTime: new Date(),
@@ -139,15 +145,18 @@ export const createCarRecord = async (req, res) => {
   }
 };
 
-// ============ UPDATE LOCATION FOR TRIP ============
+
 export const updateTripLocation = async (req, res) => {
   try {
     const { tripId, latitude, longitude, speed, heading, accuracy } = req.body;
-    const driverId = req.driver._id;
+    const driverId = req.driver._id; // ✅ Driver ID from token
 
+    console.log(`📍 Updating location for trip: ${tripId}, driver: ${driverId}`);
+
+    // ✅ Verify trip belongs to this driver
     const trip = await CarRecord.findOne({
       _id: tripId,
-      driver: driverId,
+      driver: driverId, // ✅ IMPORTANT: Verify driver ownership
     });
 
     if (!trip) {
@@ -207,15 +216,18 @@ export const updateTripLocation = async (req, res) => {
   }
 };
 
-// ============ STOP TRIP / COMPLETE TRIP ============
+
 export const stopTrip = async (req, res) => {
   try {
     const { tripId } = req.params;
-    const driverId = req.driver._id;
+    const driverId = req.driver._id; // ✅ Driver ID from token
 
+    console.log(`🛑 Stopping trip: ${tripId}, driver: ${driverId}`);
+
+    // ✅ Verify trip belongs to this driver
     const trip = await CarRecord.findOne({
       _id: tripId,
-      driver: driverId,
+      driver: driverId, // ✅ IMPORTANT: Verify driver ownership
     });
 
     if (!trip) {
@@ -279,13 +291,14 @@ export const stopTrip = async (req, res) => {
   }
 };
 
-// ============ GET ACTIVE TRIP ============
 export const getActiveTrip = async (req, res) => {
   try {
-    const driverId = req.driver._id;
+    const driverId = req.driver._id; // ✅ Driver ID from token
+
+    console.log(`📤 Getting active trip for driver: ${driverId}`);
 
     const activeTrip = await CarRecord.findOne({
-      driver: driverId,
+      driver: driverId, // ✅ IMPORTANT: Sirf is driver ki active trip
       tripStatus: 'active',
     })
       .populate({
@@ -303,6 +316,7 @@ export const getActiveTrip = async (req, res) => {
       .sort({ createdAt: -1 });
 
     if (!activeTrip) {
+      console.log(`ℹ️ No active trip found for driver ${driverId}`);
       return res.status(200).json({
         success: true,
         data: null,
@@ -315,6 +329,8 @@ export const getActiveTrip = async (req, res) => {
     })
       .sort({ createdAt: -1 })
       .limit(1);
+
+    console.log(`✅ Active trip found for driver ${driverId}`);
 
     res.status(200).json({
       success: true,
@@ -1067,23 +1083,28 @@ export const deleteCarRecord = async (req, res) => {
   }
 };
 
-// ============ GET CURRENT DRIVER'S TRIPS ============
+// controller/carRecord.controller.js - Confirm this is correct
+// controller/carRecord.controller.js - Confirm this is correct
+
 export const myRoutetripDriver = async (req, res) => {
   try {
+    // ✅ IMPORTANT: Driver ID from token
     const driverId = req.driver._id;
     const { date } = req.query;
 
+    console.log(`📤 Fetching trips for driver: ${driverId}`);
+    console.log(`📤 Driver email: ${req.driver.email}`);
+
+    // ✅ ONLY filter for this specific driver
     let filter = {
-      driver: driverId,
+      driver: driverId, // ✅ CRITICAL: Sirf is driver ki trips
     };
 
     if (date) {
       const startOfDay = new Date(date);
       startOfDay.setHours(0, 0, 0, 0);
-
       const endOfDay = new Date(date);
       endOfDay.setHours(23, 59, 59, 999);
-
       filter.createdAt = {
         $gte: startOfDay,
         $lte: endOfDay,
@@ -1099,14 +1120,12 @@ export const myRoutetripDriver = async (req, res) => {
         select: 'latitude longitude speed heading accuracy createdAt'
       });
 
-    const totalKm = trips.reduce((sum, trip) => {
-      return sum + (trip.totalKm || 0);
-    }, 0);
+    console.log(`✅ Found ${trips.length} trips for driver ${driverId}`);
 
     res.status(200).json({
       success: true,
       totalTrips: trips.length,
-      totalKm,
+      totalKm: trips.reduce((sum, trip) => sum + (trip.totalKm || 0), 0),
       data: trips,
     });
   } catch (error) {
@@ -1117,22 +1136,21 @@ export const myRoutetripDriver = async (req, res) => {
     });
   }
 };
+// ============ EXPORT TO EXCEL ============
+import xlsx from 'xlsx';
+import ExcelJS from 'exceljs';
 
-// Method 1: Using xlsx library (simpler)
 export const exportCarRecordsToExcel = async (req, res) => {
   try {
-    // Fetch all car records with populated references
     const records = await CarRecord.find()
-      .populate("driver", "name phone") // Adjust fields as per your Driver schema
-      .populate("staff", "name designation") // Adjust fields as per your Staff schema
-      .populate("drivertrakinglocation", "latitude longitude address") // Adjust fields
-      .populate("createdBy", "name email") // Adjust fields
+      .populate("driver", "driverName email")
+      .populate("staff", "name")
+      .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
-    // Transform data for Excel
     const excelData = records.map((record, index) => ({
       "S.No": index + 1,
-      "Driver Name": record.driver?.name || "N/A",
+      "Driver Name": record.driver?.driverName || "N/A",
       "Staff Name": record.staff?.name || record.staffName || "N/A",
       "Vehicle Name": record.name || "N/A",
       "Sector": record.sector || "N/A",
@@ -1142,35 +1160,17 @@ export const exportCarRecordsToExcel = async (req, res) => {
       "Start Reading": record.startReading || "N/A",
       "End Reading": record.endReading || "N/A",
       "Total KM": record.totalKm || "N/A",
-      "Petrol Refilling Reading": record.petrol?.refillingReading || "N/A",
       "Petrol Amount": record.petrol?.amount || "N/A",
-      "Visit Notes": record.visit?.notes || "N/A",
-      "Close Reading (Home)": record.visit?.closeReadingHome || "N/A",
-      "Maintenance Reading": record.maintenance?.reading || "N/A",
       "Maintenance Amount": record.maintenance?.amount || "N/A",
-      "Maintenance Work Details": record.maintenance?.workDetails || "N/A",
-      "Created By": record.createdBy?.name || "N/A",
       "Date": record.date ? new Date(record.date).toLocaleDateString() : "N/A",
-      "Created At": record.createdAt ? new Date(record.createdAt).toLocaleString() : "N/A",
-      "Updated At": record.updatedAt ? new Date(record.updatedAt).toLocaleString() : "N/A",
     }));
 
-    // Create workbook and worksheet
     const workbook = xlsx.utils.book_new();
     const worksheet = xlsx.utils.json_to_sheet(excelData);
-
-    // Auto-size columns (optional)
-    const maxWidth = 20;
-    worksheet["!cols"] = Object.keys(excelData[0] || {}).map(() => ({
-      wch: maxWidth,
-    }));
-
     xlsx.utils.book_append_sheet(workbook, worksheet, "Car Records");
 
-    // Generate buffer
     const buffer = xlsx.write(workbook, { type: "buffer", bookType: "xlsx" });
 
-    // Set response headers
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -1191,20 +1191,17 @@ export const exportCarRecordsToExcel = async (req, res) => {
   }
 };
 
-// Method 2: Using ExcelJS (more features like styling)
 export const exportCarRecordsWithExcelJS = async (req, res) => {
   try {
     const records = await CarRecord.find()
-      .populate("driver", "name phone")
-      .populate("staff", "name designation")
-      .populate("drivertrakinglocation", "latitude longitude address")
+      .populate("driver", "driverName email")
+      .populate("staff", "name")
       .populate("createdBy", "name email")
       .sort({ createdAt: -1 });
 
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Car Records");
 
-    // Define columns
     worksheet.columns = [
       { header: "S.No", key: "sno", width: 8 },
       { header: "Driver Name", key: "driver", width: 20 },
@@ -1217,33 +1214,22 @@ export const exportCarRecordsWithExcelJS = async (req, res) => {
       { header: "Start Reading", key: "startReading", width: 15 },
       { header: "End Reading", key: "endReading", width: 15 },
       { header: "Total KM", key: "totalKm", width: 12 },
-      { header: "Petrol Reading", key: "petrolReading", width: 15 },
       { header: "Petrol Amount", key: "petrolAmount", width: 15 },
-      { header: "Visit Notes", key: "visitNotes", width: 25 },
-      { header: "Close Reading", key: "closeReading", width: 15 },
-      { header: "Maint. Reading", key: "maintReading", width: 15 },
-      { header: "Maint. Amount", key: "maintAmount", width: 15 },
-      { header: "Work Details", key: "workDetails", width: 25 },
-      { header: "Created By", key: "createdBy", width: 20 },
+      { header: "Maintenance Amount", key: "maintAmount", width: 15 },
       { header: "Date", key: "date", width: 15 },
-      { header: "Created At", key: "createdAt", width: 20 },
-      { header: "Updated At", key: "updatedAt", width: 20 },
     ];
 
-    // Style header row
     worksheet.getRow(1).font = { bold: true };
     worksheet.getRow(1).fill = {
       type: "pattern",
       pattern: "solid",
       fgColor: { argb: "FFE0E0E0" },
     };
-    worksheet.getRow(1).alignment = { horizontal: "center" };
 
-    // Add data
     records.forEach((record, index) => {
       worksheet.addRow({
         sno: index + 1,
-        driver: record.driver?.name || "N/A",
+        driver: record.driver?.driverName || "N/A",
         staff: record.staff?.name || record.staffName || "N/A",
         name: record.name || "N/A",
         sector: record.sector || "N/A",
@@ -1253,25 +1239,12 @@ export const exportCarRecordsWithExcelJS = async (req, res) => {
         startReading: record.startReading || "N/A",
         endReading: record.endReading || "N/A",
         totalKm: record.totalKm || "N/A",
-        petrolReading: record.petrol?.refillingReading || "N/A",
         petrolAmount: record.petrol?.amount || "N/A",
-        visitNotes: record.visit?.notes || "N/A",
-        closeReading: record.visit?.closeReadingHome || "N/A",
-        maintReading: record.maintenance?.reading || "N/A",
         maintAmount: record.maintenance?.amount || "N/A",
-        workDetails: record.maintenance?.workDetails || "N/A",
-        createdBy: record.createdBy?.name || "N/A",
         date: record.date ? new Date(record.date).toLocaleDateString() : "N/A",
-        createdAt: record.createdAt
-          ? new Date(record.createdAt).toLocaleString()
-          : "N/A",
-        updatedAt: record.updatedAt
-          ? new Date(record.updatedAt).toLocaleString()
-          : "N/A",
       });
     });
 
-    // Generate buffer
     const buffer = await workbook.xlsx.writeBuffer();
 
     res.setHeader(
@@ -1290,6 +1263,366 @@ export const exportCarRecordsWithExcelJS = async (req, res) => {
       success: false,
       message: "Failed to export car records",
       error: error.message,
+    });
+  }
+};
+
+// ============ LIVE VEHICLES TRACKING ============
+
+// Method 1: Get from CarRecord with tripStatus: 'active'
+export const getLiveVehicles = async (req, res) => {
+  try {
+    const activeTrips = await CarRecord.find({
+      tripStatus: "active",
+    })
+      .populate({
+        path: "driver",
+        select: "driverName email vehicle profile status",
+      })
+      .populate({
+        path: "staff",
+        select: "name",
+      })
+      .populate({
+        path: "drivertrakinglocation",
+        select: "latitude longitude speed heading accuracy createdAt",
+      })
+      .sort({ createdAt: -1 });
+
+    const vehicles = activeTrips.map((trip) => ({
+      tripId: trip._id,
+      carNumber: trip.carNumber,
+      driverId: trip.driver?._id,
+      driverName: trip.driver?.driverName,
+      staffName: trip.staff?.name || trip.staffName,
+      status: trip.tripStatus,
+      latitude: trip.drivertrakinglocation?.latitude || null,
+      longitude: trip.drivertrakinglocation?.longitude || null,
+      speed: trip.drivertrakinglocation?.speed || 0,
+      heading: trip.drivertrakinglocation?.heading || 0,
+      accuracy: trip.drivertrakinglocation?.accuracy || 0,
+      updatedAt: trip.drivertrakinglocation?.createdAt,
+    }));
+
+    res.status(200).json({
+      success: true,
+      total: vehicles.length,
+      data: vehicles,
+    });
+  } catch (error) {
+    console.error("Live Vehicle Error:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
+// Method 2: Get from Locations (more reliable)
+export const getLiveVehiclesFromLocations = async (req, res) => {
+  try {
+    console.log('📍 Fetching live vehicles from locations...');
+    
+    const activeLocations = await DriverLocation.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .populate({
+        path: 'driver',
+        select: 'driverName email'
+      });
+    
+    console.log(`📍 Found ${activeLocations.length} active locations`);
+    
+    if (activeLocations.length === 0) {
+      return res.status(200).json({
+        success: true,
+        total: 0,
+        data: [],
+        message: 'No active locations found'
+      });
+    }
+    
+    // Get unique trip IDs (handle null/undefined)
+    const tripIds = [];
+    activeLocations.forEach(loc => {
+      if (loc.trip) {
+        const tripId = loc.trip.toString();
+        if (!tripIds.includes(tripId)) {
+          tripIds.push(tripId);
+        }
+      }
+    });
+    
+    console.log(`📍 Found ${tripIds.length} unique trip IDs`);
+    
+    if (tripIds.length === 0) {
+      return res.status(200).json({
+        success: true,
+        total: 0,
+        data: [],
+        message: 'No trips associated with active locations'
+      });
+    }
+    
+    const trips = await CarRecord.find({
+      _id: { $in: tripIds }
+    }).populate('driver', 'driverName email');
+    
+    console.log(`📍 Found ${trips.length} trips`);
+    
+    const vehicles = trips.map(trip => {
+      const location = activeLocations.find(
+        loc => loc.trip && loc.trip.toString() === trip._id.toString()
+      );
+      
+      return {
+        tripId: trip._id,
+        carNumber: trip.carNumber || 'Unknown',
+        driverId: trip.driver?._id || null,
+        driverName: trip.driver?.driverName || 'Unknown',
+        staffName: trip.staffName || 'N/A',
+        status: trip.tripStatus || 'active',
+        latitude: location?.latitude || null,
+        longitude: location?.longitude || null,
+        speed: location?.speed || 0,
+        heading: location?.heading || 0,
+        accuracy: location?.accuracy || 0,
+        updatedAt: location?.createdAt || null,
+        locationId: location?._id || null
+      };
+    });
+    
+    res.status(200).json({
+      success: true,
+      total: vehicles.length,
+      data: vehicles,
+      debug: {
+        totalActiveLocations: activeLocations.length,
+        uniqueTrips: tripIds.length,
+        tripsFound: trips.length
+      }
+    });
+    
+  } catch (error) {
+    console.error("Error in getLiveVehiclesFromLocations:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+};
+
+// Method 3: Using MongoDB Aggregation (most efficient)
+export const getVehiclesWithLocations = async (req, res) => {
+  try {
+    const vehicles = await DriverLocation.aggregate([
+      { $match: { isActive: true } },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$trip",
+          locationId: { $first: "$_id" },
+          latitude: { $first: "$latitude" },
+          longitude: { $first: "$longitude" },
+          speed: { $first: "$speed" },
+          heading: { $first: "$heading" },
+          accuracy: { $first: "$accuracy" },
+          updatedAt: { $first: "$createdAt" },
+          driverId: { $first: "$driver" }
+        }
+      },
+      { $match: { _id: { $ne: null } } },
+      {
+        $lookup: {
+          from: "carrecords",
+          localField: "_id",
+          foreignField: "_id",
+          as: "trip"
+        }
+      },
+      { $unwind: { path: "$trip", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "drivers",
+          localField: "driverId",
+          foreignField: "_id",
+          as: "driver"
+        }
+      },
+      { $unwind: { path: "$driver", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          tripId: "$_id",
+          carNumber: "$trip.carNumber",
+          driverId: "$driverId",
+          driverName: "$driver.driverName",
+          staffName: "$trip.staffName",
+          status: "$trip.tripStatus",
+          latitude: 1,
+          longitude: 1,
+          speed: 1,
+          heading: 1,
+          accuracy: 1,
+          updatedAt: 1,
+          locationId: 1
+        }
+      }
+    ]);
+    
+    res.status(200).json({
+      success: true,
+      total: vehicles.length,
+      data: vehicles
+    });
+    
+  } catch (error) {
+    console.error("Error in getVehiclesWithLocations:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// ============ DEBUG FUNCTIONS ============
+
+export const debugActiveTrips = async (req, res) => {
+  try {
+    const allRecords = await CarRecord.find({});
+    const activeRecords = await CarRecord.find({ tripStatus: 'active' });
+    const activeWithDetails = await CarRecord.find({ tripStatus: 'active' })
+      .populate('driver', 'driverName email')
+      .populate('drivertrakinglocation');
+    
+    const allLocations = await DriverLocation.find({});
+    const activeLocations = await DriverLocation.find({ isActive: true });
+    
+    res.status(200).json({
+      success: true,
+      debug: {
+        totalCarRecords: allRecords.length,
+        activeCarRecords: activeRecords.length,
+        activeWithDetails: activeWithDetails.map(t => ({
+          id: t._id,
+          carNumber: t.carNumber,
+          tripStatus: t.tripStatus,
+          driver: t.driver?.driverName,
+          locationId: t.drivertrakinglocation?._id,
+          locationData: t.drivertrakinglocation
+        })),
+        totalDriverLocations: allLocations.length,
+        activeDriverLocations: activeLocations.length,
+        sampleLocations: allLocations.slice(0, 3).map(l => ({
+          trip: l.trip,
+          lat: l.latitude,
+          lng: l.longitude,
+          isActive: l.isActive
+        }))
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+export const fixActiveTrips = async (req, res) => {
+  try {
+    console.log('🔧 Fixing active trips...');
+    
+    const activeLocations = await DriverLocation.find({ isActive: true });
+    
+    if (activeLocations.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No active locations found',
+        modifiedCount: 0
+      });
+    }
+    
+    const tripIds = [];
+    activeLocations.forEach(loc => {
+      if (loc.trip) {
+        const tripId = loc.trip.toString();
+        if (!tripIds.includes(tripId)) {
+          tripIds.push(tripId);
+        }
+      }
+    });
+    
+    console.log(`📍 Found ${tripIds.length} unique trips with active locations`);
+    
+    const result = await CarRecord.updateMany(
+      { _id: { $in: tripIds } },
+      { 
+        $set: { 
+          tripStatus: 'active',
+          startTime: new Date()
+        } 
+      }
+    );
+    
+    const updatedTrips = await CarRecord.find({ 
+      _id: { $in: tripIds } 
+    }).select('carNumber tripStatus');
+    
+    res.status(200).json({
+      success: true,
+      message: `${result.modifiedCount} trips updated to active`,
+      modifiedCount: result.modifiedCount,
+      matchedCount: result.matchedCount,
+      updatedTrips: updatedTrips,
+      totalActiveLocations: activeLocations.length
+    });
+    
+  } catch (error) {
+    console.error("Error in fixActiveTrips:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// ============ DEBUG LOCATION TRIPS ============
+export const debugLocationTrips = async (req, res) => {
+  try {
+    const activeLocations = await DriverLocation.find({ isActive: true })
+      .sort({ createdAt: -1 })
+      .limit(10);
+    
+    const tripIds = activeLocations.map(loc => loc.trip);
+    const trips = await CarRecord.find({ 
+      _id: { $in: tripIds } 
+    }).select('_id carNumber tripStatus');
+    
+    const locationWithTripStatus = activeLocations.map(loc => {
+      const trip = trips.find(t => t._id.toString() === loc.trip?.toString());
+      return {
+        locationId: loc._id,
+        tripId: loc.trip,
+        tripStatus: trip?.tripStatus || 'No trip found',
+        carNumber: trip?.carNumber || 'Unknown',
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        isActive: loc.isActive,
+        createdAt: loc.createdAt
+      };
+    });
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        totalActiveLocations: await DriverLocation.countDocuments({ isActive: true }),
+        sampleLocations: locationWithTripStatus
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 };

@@ -19,6 +19,12 @@ import {
   getTripRoute,
   exportCarRecordsToExcel,
   exportCarRecordsWithExcelJS,
+  getLiveVehicles,
+  getLiveVehiclesFromLocations,
+  getVehiclesWithLocations,
+  debugActiveTrips,
+  debugLocationTrips,
+  fixActiveTrips,
 } from "../controller/carRecord.controller.js";
 
 const router = express.Router();
@@ -32,20 +38,32 @@ router.get("/my-trips", protectDriver, myRoutetripDriver);
 router.get("/trip-locations/:tripId", protectDriver, getTripLocations);
 router.get("/trip-route/:tripId", protectDriver, getTripRoute);
 
-// ============ PUBLIC / ADMIN ROUTES ============
-router.get("/", getAllCarRecords);
-router.get("/:id", getCarRecordById);
-router.put("/:id", updateCarRecord);
-router.delete("/:id", deleteCarRecord);
+// ============ DEBUG ROUTES (MUST BE BEFORE /:id) ============
+router.get("/debug/active-trips", debugActiveTrips);
+router.get("/debug/location-trips", debugLocationTrips);
+router.post("/fix/active-trips", fixActiveTrips);
+
+// ============ PUBLIC / ADMIN ROUTES (Specific paths FIRST) ============
 router.get("/staff/all", getAllStaff);
 router.get("/staff/:staffId/records", getCarRecordsByStaff);
 router.get("/registration/:registrationNumber", getCarRecordsByRegistration);
 router.get("/summary/analytics", getCarRecordSummary);
 
-
+// Vehicle tracking routes - SPECIFIC PATHS FIRST
+router.get("/live-vehicles", getLiveVehicles);
+router.get("/live-vehicles-v2", getLiveVehiclesFromLocations);
+router.get("/vehicles-with-locations", getVehiclesWithLocations);
 
 // Export routes
 router.get("/export/excel", exportCarRecordsToExcel);
-// Or using ExcelJS
 router.get("/export/exceljs", exportCarRecordsWithExcelJS);
+
+// Get all records (with query params)
+router.get("/", getAllCarRecords);
+
+// ============ PARAMETERIZED ROUTES (MUST BE LAST) ============
+router.get("/:id", getCarRecordById);
+router.put("/:id", updateCarRecord);
+router.delete("/:id", deleteCarRecord);
+
 export default router;

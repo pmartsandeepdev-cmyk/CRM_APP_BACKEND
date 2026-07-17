@@ -1,3 +1,4 @@
+// index.js
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -7,7 +8,6 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
-
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,10 +24,9 @@ const allowedOrigins = [
     "http://localhost:5176",
     "https://admin.thepropmart.com",
     "http://localhost:8082",
-    "http://localhost:19006",  // Expo web default
-    "http://localhost:19000",  // Expo dev
-]; 
-
+    "http://localhost:19006",
+    "http://localhost:19000",
+];
 
 const io = new Server(httpServer, {
     cors: {
@@ -53,107 +52,253 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // Connect to Database
 connectDB();
 
-// At the top of your index.js, after other imports
+// ============ IMPORT MODELS ============
+import { Driver } from './src/model/driver.model.js';
+import { DriverLocation } from './src/model/driverLocation.model.js';
+import { CarRecord } from './src/model/carRecodMomement.model.js';
+
+// ============ IMPORT ROUTES ============
 import adminRoutes from './src/routes/admin.routes.js';
 import driverRoutes from './src/routes/driver.routes.js';
-import driverLoginRoutes from './src/routes/driverLogin.routes.js'
-import routedriverRoutes  from './src/routes/carRecord.routes.js'
-import attandenceRoutes from './src/routes/attendance.routes.js'
-import staffRoutes  from './src/routes/staff.routes.js'
-import driverlivetrackingRoutes from './src/routes/driverLocation.routes.js'
+import driverLoginRoutes from './src/routes/driverLogin.routes.js';
+import routedriverRoutes from './src/routes/carRecord.routes.js';
+import attandenceRoutes from './src/routes/attendance.routes.js';
+import staffRoutes from './src/routes/staff.routes.js';
+import driverlivetrackingRoutes from './src/routes/driverLocation.routes.js';
 
-// Make sure these are mounted correctly
+// ============ MOUNT ROUTES ============
 app.use('/admin', adminRoutes);
 app.use('/driver', driverRoutes);
-app.use('/driver-login' , driverLoginRoutes); 
-app.use('/routedriver' , routedriverRoutes);
-app.use('/api/attendance', attandenceRoutes)
-app.use('/staff', staffRoutes)
-app.use('/driver-livetraking', driverlivetrackingRoutes)
-// ==================== SOCKET.IO ====================
+app.use('/driver-login', driverLoginRoutes);
+app.use('/routedriver', routedriverRoutes);
+app.use('/api/attendance', attandenceRoutes);
+app.use('/staff', staffRoutes);
+app.use('/driver-livetraking', driverlivetrackingRoutes);
 
-//  Store active drivers in memory
-const activeDrivers = new Map(); // driverId -> { socketId, lastLocation, orderId }
+// ==================== SOCKET.IO - CAR TRACKING ====================
 
-// Function to get all drivers locations
-const getAllDriversLocations = async () => {
+// Store active drivers in memory
+const activeDrivers = new Map();
+
+// ============ GET ACTIVE VEHICLES FROM CAR RECORDS ============
+const getActiveVehicles = async () => {
     try {
-        const drivers = await Driver.find({ status: 'active' })
-            .select('driverName email vehicle status')
-            .lean();
+        console.log('🚗 Fetching active vehicles from CarRecord...');
 
-        const driversWithLocations = await Promise.all(
-            drivers.map(async (driver) => {
-                // Get driver's active order
-                const activeOrder = await OrderDispatch.findOne({
-                    'driver.driverId': driver._id,
-                    status: { $in: ['Accepted', 'In Transit', 'Out for Delivery'] }
-                })
-                .select('trackingNumber status customer liveTracking')
-                .lean();
-
-                let currentLocation = null;
-                let isActive = false;
-                let lastUpdated = null;
-
-                // Check if driver is in active drivers map
-                const activeDriver = activeDrivers.get(driver._id.toString());
-                if (activeDriver) {
-                    currentLocation = activeDriver.lastLocation;
-                    isActive = true;
-                    lastUpdated = activeDriver.lastUpdate;
-                } else if (activeOrder?.liveTracking?.currentLocation) {
-                    currentLocation = activeOrder.liveTracking.currentLocation;
-                    lastUpdated = activeOrder.liveTracking.lastUpdated;
-                }
-
-                return {
-                    driverId: driver._id,
-                    driverName: driver.driverName,
-                    email: driver.email,
-                    vehicle: driver.vehicle,
-                    status: driver.status,
-                    isActive,
-                    onDuty: isActive,
-                    currentOrder: activeOrder,
-                    currentLocation,
-                    lastUpdated
-                };
+        const activeTrips = await CarRecord.find({
+            tripStatus: "active",
+        })
+            .populate({
+                path: "driver",
+                select: "driverName email vehicle profile status",
             })
-        );
+            .populate({
+                path: "drivertrakinglocation",
+                select: "latitude longitude speed heading accuracy createdAt",
+            })
+            .populate({
+                path: "staff",
+                select: "name",
+            })
+            .sort({ createdAt: -1 });
 
-        return driversWithLocations;
+        console.log(`📍 Found ${activeTrips.length} active trips`);
+
+        const vehicles = activeTrips.map((trip) => {
+            const driver = trip.driver;
+            const location = trip.drivertrakinglocation;
+            const staff = trip.staff;
+
+            return {
+                driverId: driver?._id || trip.driver,
+                driverName: driver?.driverName || "Unknown Driver",
+                email: driver?.email || "",
+                vehicle: {
+                    registrationNumber: trip.carNumber || "Unknown",
+                    brand: driver?.vehicle?.brand || "",
+                    model: driver?.vehicle?.model || "",
+                    type: driver?.vehicle?.type || "",
+                },
+                staffName: staff?.name || trip.staffName || "",
+                status: trip.tripStatus || "active",
+                isActive: trip.tripStatus === "active",
+                onDuty: trip.tripStatus === "active",
+                tripId: trip._id,
+                carNumber: trip.carNumber,
+                currentLocation: location ? {
+                    latitude: location.latitude,
+                    longitude: location.longitude,
+                    speed: location.speed || 0,
+                    heading: location.heading || 0,
+                    accuracy: location.accuracy || 0,
+                    updatedAt: location.createdAt || new Date(),
+                } : null,
+                lastUpdated: location?.createdAt || trip.startTime || new Date(),
+                locationId: location?._id || null,
+                startRoute: trip.startroute,
+                endRoute: trip.endroute,
+                movementPurpose: trip.movementPurpose,
+                sector: trip.sector,
+                source: 'carRecord'
+            };
+        });
+
+        console.log(`✅ Returning ${vehicles.length} active vehicles`);
+        return vehicles;
+
     } catch (error) {
-        console.error('Error fetching drivers locations:', error);
+        console.error('❌ Error fetching active vehicles:', error);
         return [];
     }
 };
 
+// ============ GET VEHICLES FROM DRIVER LOCATIONS (BACKUP) ============
+const getVehiclesFromLocations = async () => {
+    try {
+        console.log('📍 Fetching from DriverLocation as backup...');
+
+        const activeLocations = await DriverLocation.find({ isActive: true })
+            .sort({ createdAt: -1 })
+            .populate({
+                path: 'driver',
+                select: 'driverName email vehicle profile status'
+            })
+            .populate({
+                path: 'trip',
+                select: 'carNumber tripStatus staffName startroute endroute movementPurpose sector'
+            });
+
+        console.log(`📍 Found ${activeLocations.length} active locations`);
+
+        const driverMap = new Map();
+
+        activeLocations.forEach(loc => {
+            const driverId = loc.driver?._id?.toString() || loc.driver?.toString();
+            if (!driverId) return;
+
+            if (!driverMap.has(driverId) ||
+                new Date(loc.createdAt) > new Date(driverMap.get(driverId).lastUpdated)) {
+
+                const trip = loc.trip;
+
+                driverMap.set(driverId, {
+                    driverId: driverId,
+                    driverName: loc.driver?.driverName || "Unknown Driver",
+                    email: loc.driver?.email || "",
+                    vehicle: {
+                        registrationNumber: trip?.carNumber || loc.driver?.vehicle?.registrationNumber || "Unknown",
+                        brand: loc.driver?.vehicle?.brand || "",
+                        model: loc.driver?.vehicle?.model || "",
+                        type: loc.driver?.vehicle?.type || "",
+                    },
+                    staffName: trip?.staffName || "",
+                    status: trip?.tripStatus || "active",
+                    isActive: true,
+                    onDuty: true,
+                    tripId: trip?._id || loc.trip,
+                    carNumber: trip?.carNumber || "Unknown",
+                    currentLocation: {
+                        latitude: loc.latitude,
+                        longitude: loc.longitude,
+                        speed: loc.speed || 0,
+                        heading: loc.heading || 0,
+                        accuracy: loc.accuracy || 0,
+                        updatedAt: loc.createdAt || new Date(),
+                    },
+                    lastUpdated: loc.createdAt || new Date(),
+                    locationId: loc._id,
+                    startRoute: trip?.startroute || "",
+                    endRoute: trip?.endroute || "",
+                    movementPurpose: trip?.movementPurpose || "",
+                    sector: trip?.sector || "",
+                    source: 'driverLocation'
+                });
+            }
+        });
+
+        const drivers = Array.from(driverMap.values());
+        console.log(`✅ Returning ${drivers.length} vehicles from DriverLocation backup`);
+        return drivers;
+
+    } catch (error) {
+        console.error('❌ Error fetching from DriverLocation:', error);
+        return [];
+    }
+};
+
+// ============ MERGE VEHICLES FROM BOTH SOURCES ============
+const getAllActiveVehicles = async () => {
+    try {
+        // Get from both sources
+        const [vehiclesFromCarRecord, vehiclesFromLocation] = await Promise.all([
+            getActiveVehicles(),
+            getVehiclesFromLocations()
+        ]);
+
+        const mergedMap = new Map();
+
+        // Add vehicles from CarRecord (primary source)
+        vehiclesFromCarRecord.forEach(v => {
+            const key = v.driverId?.toString() || v.tripId?.toString();
+            if (key) {
+                mergedMap.set(key, { ...v, source: 'carRecord' });
+            }
+        });
+
+        // Add vehicles from DriverLocation (backup - only if not already present)
+        vehiclesFromLocation.forEach(v => {
+            const key = v.driverId?.toString() || v.tripId?.toString();
+            if (key) {
+                const existing = mergedMap.get(key);
+                if (!existing) {
+                    mergedMap.set(key, { ...v, source: 'driverLocation' });
+                } else if (new Date(v.lastUpdated) > new Date(existing.lastUpdated)) {
+                    // Update if location is newer
+                    mergedMap.set(key, { ...v, source: 'driverLocation' });
+                }
+            }
+        });
+
+        const merged = Array.from(mergedMap.values());
+        console.log(`✅ Total ${merged.length} active vehicles found`);
+        return merged;
+
+    } catch (error) {
+        console.error('❌ Error merging vehicle data:', error);
+        return [];
+    }
+};
+
+// ==================== SOCKET.IO CONNECTION ====================
+
 io.on("connection", (socket) => {
     console.log("✅ New client connected:", socket.id);
 
-    // 1. JOIN ALL DRIVERS ROOM (For admin/global view)
-    socket.on("join-all-drivers", () => {
+    // 1. JOIN ALL DRIVERS ROOM (Admin view)
+    socket.on("join-all-drivers", async () => {
         socket.join('all-drivers');
         console.log(`📡 Socket ${socket.id} joined all-drivers room`);
-        
-        // Send current drivers data immediately
-        getAllDriversLocations().then(drivers => {
-            socket.emit("all-drivers-locations", { drivers });
-        });
+
+        try {
+            const vehicles = await getAllActiveVehicles();
+            socket.emit("all-drivers-locations", { drivers: vehicles });
+            console.log(`📤 Sent ${vehicles.length} vehicles to client`);
+        } catch (error) {
+            console.error("❌ Error sending vehicles data:", error);
+            socket.emit("all-drivers-locations", { drivers: [] });
+        }
     });
 
-    // 2. DRIVER JOINS
+    // 2. DRIVER JOINS (Driver app)
     socket.on("join-driver", async (driverId) => {
         if (!driverId) {
             console.error("❌ No driverId provided");
             return;
         }
-        
+
         socket.join(`driver-${driverId}`);
         console.log(`🚚 Driver ${driverId} joined room`);
-        
-        // Add to active drivers map
+
         activeDrivers.set(driverId, {
             socketId: socket.id,
             lastLocation: null,
@@ -166,43 +311,49 @@ io.on("connection", (socket) => {
         });
 
         // Notify all-drivers room
-        getAllDriversLocations().then(drivers => {
-            io.to('all-drivers').emit("all-drivers-locations", { drivers });
-        });
+        try {
+            const vehicles = await getAllActiveVehicles();
+            io.to('all-drivers').emit("all-drivers-locations", { drivers: vehicles });
+        } catch (error) {
+            console.error("❌ Error updating after driver join:", error);
+        }
     });
 
-    // 3. JOIN ORDER ROOM
-    socket.on("join-order", async (orderId) => {
-        if (!orderId) {
-            console.error("❌ No orderId provided");
+    // 3. JOIN TRIP ROOM (For specific trip tracking)
+    socket.on("join-trip", async (tripId) => {
+        if (!tripId) {
+            console.error("❌ No tripId provided");
             return;
         }
-        
-        socket.join(`order-${orderId}`);
-        console.log(`📦 Socket joined order-${orderId}`);
-        
+
+        socket.join(`trip-${tripId}`);
+        console.log(`🚗 Socket joined trip-${tripId}`);
+
         try {
-            const order = await OrderDispatch.findById(orderId);
-            if (order) {
-                socket.emit("order-details", {
-                    orderId: order._id,
-                    status: order.status,
-                    trackingNumber: order.trackingNumber,
-                    customer: order.customer,
-                    liveTracking: order.liveTracking
+            const trip = await CarRecord.findById(tripId)
+                .populate('driver', 'driverName email')
+                .populate('drivertrakinglocation');
+
+            if (trip) {
+                socket.emit("trip-details", {
+                    tripId: trip._id,
+                    carNumber: trip.carNumber,
+                    status: trip.tripStatus,
+                    driver: trip.driver,
+                    location: trip.drivertrakinglocation
                 });
             }
         } catch (err) {
-            console.error("Error fetching order:", err);
+            console.error("❌ Error fetching trip:", err);
         }
     });
 
     // 4. DRIVER LOCATION UPDATE
     socket.on("driver-location-update", async (data) => {
         try {
-            const { orderId, driverId, latitude, longitude, speed = 0, accuracy = 0 } = data;
-            
-            console.log(`📍 Driver location update for order ${orderId}`);
+            const { tripId, driverId, latitude, longitude, speed = 0, accuracy = 0 } = data;
+
+            console.log(`📍 Location update - Driver: ${driverId}, Trip: ${tripId}`);
 
             // Update active drivers map
             activeDrivers.set(driverId, {
@@ -211,42 +362,48 @@ io.on("connection", (socket) => {
                 lastUpdate: new Date()
             });
 
-            // Update in database
-            const order = await OrderDispatch.findOneAndUpdate(
-                { _id: orderId, "driver.driverId": driverId },
-                {
-                    "liveTracking.isActive": true,
-                    "liveTracking.currentLocation": {
-                        latitude,
-                        longitude,
-                        speed,
-                        accuracy,
-                        updatedAt: new Date()
-                    },
-                    "liveTracking.lastUpdated": new Date(),
-                    $push: {
-                        "liveTracking.locationHistory": {
-                            latitude,
-                            longitude,
-                            speed,
-                            accuracy,
-                            timestamp: new Date()
-                        }
-                    }
+            // Save to DriverLocation
+            const location = new DriverLocation({
+                driver: driverId,
+                trip: tripId,
+                latitude,
+                longitude,
+                speed,
+                heading: data.heading || 0,
+                accuracy,
+                isActive: true,
+                locationTimestamp: new Date(),
+                createdAt: new Date(),
+            });
+
+            await location.save();
+            console.log(`✅ Location saved to database`);
+
+            // Update CarRecord with latest location
+            await CarRecord.findByIdAndUpdate(tripId, {
+                drivertrakinglocation: location._id,
+            });
+
+            // Update Driver status
+            await Driver.findByIdAndUpdate(driverId, {
+                status: 'active',
+                currentLocation: {
+                    latitude,
+                    longitude,
+                    timestamp: new Date(),
                 },
-                { new: true }
-            );
+            });
 
-            if (!order) {
-                socket.emit("error", { message: "Order not found" });
-                return;
-            }
+            // Send confirmation to driver
+            io.to(`driver-${driverId}`).emit("location-confirmed", {
+                tripId,
+                success: true,
+                timestamp: new Date()
+            });
 
-            console.log(`✅ Database updated for order ${orderId}`);
-
-            // Broadcast to order room
-            io.to(`order-${orderId}`).emit("location-updated", {
-                orderId,
+            // Broadcast to trip room
+            io.to(`trip-${tripId}`).emit("location-updated", {
+                tripId,
                 driverId,
                 location: {
                     latitude,
@@ -258,25 +415,21 @@ io.on("connection", (socket) => {
                 timestamp: new Date()
             });
 
-            // Send confirmation to driver
-            io.to(`driver-${driverId}`).emit("location-confirmed", {
-                orderId,
-                success: true,
-                timestamp: new Date()
-            });
-
-            // Broadcast individual driver update to all-drivers room
+            // Broadcast to all-drivers room
             io.to('all-drivers').emit("driver-location-updated", {
                 driverId,
                 location: { latitude, longitude, speed, accuracy },
                 timestamp: new Date(),
-                orderId
+                tripId
             });
 
-            // Update all drivers data
-            getAllDriversLocations().then(drivers => {
-                io.to('all-drivers').emit("all-drivers-locations", { drivers });
-            });
+            // Update all vehicles data
+            try {
+                const vehicles = await getAllActiveVehicles();
+                io.to('all-drivers').emit("all-drivers-locations", { drivers: vehicles });
+            } catch (error) {
+                console.error("❌ Error broadcasting updated vehicles:", error);
+            }
 
         } catch (error) {
             console.error("❌ Location update error:", error);
@@ -284,99 +437,84 @@ io.on("connection", (socket) => {
         }
     });
 
-    // 5. GET DRIVER ROUTE HISTORY
-    socket.on("get-driver-route-history", async (data) => {
+    // 5. GET TRIP ROUTE HISTORY
+    socket.on("get-trip-route", async (data) => {
         try {
-            const { driverId, orderId } = data;
-            
-            const order = await OrderDispatch.findOne({
-                _id: orderId,
-                'driver.driverId': driverId
-            }).select('liveTracking.locationHistory');
-            
-            if (order && order.liveTracking?.locationHistory) {
-                socket.emit("driver-route-history", {
-                    driverId,
-                    orderId,
-                    route: order.liveTracking.locationHistory
-                });
-            }
+            const { tripId } = data;
+
+            const locations = await DriverLocation.find({ trip: tripId })
+                .sort({ createdAt: 1 })
+                .select('latitude longitude speed heading accuracy createdAt');
+
+            socket.emit("trip-route", {
+                tripId,
+                route: locations
+            });
         } catch (error) {
-            console.error("Error fetching driver route:", error);
+            console.error("❌ Error fetching trip route:", error);
         }
     });
 
-    // 6. GET LOCATION HISTORY
-    socket.on("get-location-history", async (data) => {
-        try {
-            const { orderId } = data;
-            const order = await OrderDispatch.findById(orderId);
-            
-            if (order && order.liveTracking) {
-                socket.emit("location-history", {
-                    orderId,
-                    history: order.liveTracking.locationHistory || []
-                });
-            }
-        } catch (error) {
-            console.error("Error fetching location history:", error);
-        }
-    });
-
-    // 7. UPDATE DRIVER STATUS
+    // 6. UPDATE DRIVER STATUS
     socket.on("update-driver-status", async (data) => {
         try {
             const { driverId, status } = data;
-            
+
             await Driver.findByIdAndUpdate(driverId, {
                 status,
                 lastActiveAt: new Date()
             });
-            
+
             // Broadcast status update
             io.to('all-drivers').emit("driver-status-updated", {
                 driverId,
                 status,
                 timestamp: new Date()
             });
-            
-            // Update all drivers data
-            getAllDriversLocations().then(drivers => {
-                io.to('all-drivers').emit("all-drivers-locations", { drivers });
-            });
-            
+
+            // Update all vehicles data
+            try {
+                const vehicles = await getAllActiveVehicles();
+                io.to('all-drivers').emit("all-drivers-locations", { drivers: vehicles });
+            } catch (error) {
+                console.error("❌ Error broadcasting updated vehicles:", error);
+            }
+
         } catch (error) {
-            console.error("Error updating driver status:", error);
+            console.error("❌ Error updating driver status:", error);
         }
     });
 
-    // 8. REQUEST DRIVERS DATA
-    socket.on("request-drivers-data", () => {
-        getAllDriversLocations().then(drivers => {
-            socket.emit("all-drivers-locations", { drivers });
-        });
+    // 7. REQUEST VEHICLES DATA
+    socket.on("request-vehicles-data", async () => {
+        try {
+            const vehicles = await getAllActiveVehicles();
+            socket.emit("all-drivers-locations", { drivers: vehicles });
+        } catch (error) {
+            console.error("❌ Error sending requested data:", error);
+        }
     });
 
-    // 9. DISCONNECT
+    // 8. DISCONNECT
     socket.on("disconnect", () => {
         console.log("❌ Client disconnected:", socket.id);
-        
-        // Remove from active drivers map
+
         for (const [driverId, data] of activeDrivers.entries()) {
             if (data.socketId === socket.id) {
                 activeDrivers.delete(driverId);
                 console.log(`👋 Removed driver ${driverId} from active list`);
-                
-                // Notify all-drivers room
-                getAllDriversLocations().then(drivers => {
-                    io.to('all-drivers').emit("all-drivers-locations", { drivers });
+
+                getAllActiveVehicles().then(vehicles => {
+                    io.to('all-drivers').emit("all-drivers-locations", { drivers: vehicles });
+                }).catch(error => {
+                    console.error("❌ Error updating after disconnect:", error);
                 });
                 break;
             }
         }
     });
 
-    // 10. PING-PONG for connection health
+    // 9. PING-PONG
     socket.on("ping", () => {
         socket.emit("pong", { timestamp: new Date() });
     });
@@ -384,45 +522,50 @@ io.on("connection", (socket) => {
 
 // ==================== PERIODIC UPDATES ====================
 
+// Broadcast to all clients every 15 seconds
+setInterval(async () => {
+    try {
+        const vehicles = await getAllActiveVehicles();
+        io.to('all-drivers').emit("all-drivers-locations", { drivers: vehicles });
+    } catch (error) {
+        console.error("❌ Error in periodic update:", error);
+    }
+}, 15000);
 
 // Clean up inactive drivers every 5 minutes
 setInterval(() => {
     const now = new Date();
     const FIVE_MINUTES = 5 * 60 * 1000;
-    
+    let removedCount = 0;
+
     for (const [driverId, data] of activeDrivers.entries()) {
         if (now - data.lastUpdate > FIVE_MINUTES) {
             activeDrivers.delete(driverId);
-            console.log(`🕒 Removed inactive driver ${driverId}`);
+            removedCount++;
         }
+    }
+
+    if (removedCount > 0) {
+        console.log(`🕒 Removed ${removedCount} inactive drivers`);
     }
 }, 300000);
 
-// ------------------ ROUTES ------------------
+// ==================== ROUTES ====================
 
-
-
-
-// ------------------ ROOT ROUTE ------------------
 app.get('/', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: '🚀 HardikExport Backend API is running',
-    environment: process.env.NODE_ENV || 'production',
-    timestamp: new Date(),
-    endpoints: {
-      health: '/health',
-      drivers: '/api/drivers/locations',
-      socket: 'Socket.IO enabled'
-    }
-  });
+    res.status(200).json({
+        success: true,
+        message: '🚀 Car Visit Tracking API is running',
+        environment: process.env.NODE_ENV || 'production',
+        timestamp: new Date(),
+    });
 });
-// Health check
+
 app.get('/health', (req, res) => {
     res.status(200).json({
         status: 'OK',
         timestamp: new Date(),
-        service: 'Order Dispatch API',
+        service: 'Car Visit Tracking API',
         socketConnected: io.engine.clientsCount,
         activeDrivers: activeDrivers.size,
         allDriversRoom: io.sockets.adapter.rooms.get('all-drivers')?.size || 0
@@ -431,11 +574,9 @@ app.get('/health', (req, res) => {
 
 app.set("io", io);
 
-
-
 const PORT = process.env.PORT || 8080;
 httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server Running on http://localhost:${PORT}`);
-    console.log(`📡 WebSocket server ready for real-time tracking`);
-    console.log(`👨‍✈️ Active drivers tracking system initialized`);
+    console.log(`📡 WebSocket server ready for real-time car tracking`);
+    console.log(`🚗 Car visit tracking system initialized`);
 });

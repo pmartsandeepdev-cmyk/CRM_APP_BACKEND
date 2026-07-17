@@ -1,66 +1,111 @@
-// controller/attendance.controller.js
-import Attendance from "../model/attendance.model.js";
 import { Driver } from "../model/driver.model.js";
-import { Admin } from "../model/admin.model.js";
 import mongoose from "mongoose";
+import Attendance from "../model/attendance.model.js";
 
-// ============ HELPER FUNCTIONS ============
 
+
+// Helper function to calculate total hours
+// Helper function to calculate total hours
+// Helper function to calculate total hours
 const calculateTotalHours = (checkInTime, checkOutTime) => {
   if (!checkInTime || !checkOutTime) return 0;
-
-  const [inHour, inMinute] = checkInTime.split(":").map(Number);
-  const [outHour, outMinute] = checkOutTime.split(":").map(Number);
-
-  let totalMinutes = outHour * 60 + outMinute - (inHour * 60 + inMinute);
-  if (totalMinutes < 0) totalMinutes += 24 * 60;
-
-  return parseFloat((totalMinutes / 60).toFixed(2));
+  
+  const parseTime = (timeStr) => {
+    // Handle both "09:00 AM" and "09:00" formats
+    let hours, minutes, modifier;
+    
+    if (timeStr.includes('AM') || timeStr.includes('PM')) {
+      // Format: "09:00 AM"
+      const parts = timeStr.trim().split(' ');
+      const time = parts[0];
+      modifier = parts[1];
+      [hours, minutes] = time.split(':').map(Number);
+    } else {
+      // Format: "09:00"
+      [hours, minutes] = timeStr.split(':').map(Number);
+      modifier = hours >= 12 ? 'PM' : 'AM';
+    }
+    
+    // Convert to 24-hour format
+    if (modifier === 'PM' && hours !== 12) hours += 12;
+    if (modifier === 'AM' && hours === 12) hours = 0;
+    
+    return { hours, minutes };
+  };
+  
+  try {
+    const inTime = parseTime(checkInTime);
+    const outTime = parseTime(checkOutTime);
+    
+    let totalMinutes = (outTime.hours * 60 + outTime.minutes) - (inTime.hours * 60 + inTime.minutes);
+    
+    // Handle overnight shifts
+    if (totalMinutes < 0) totalMinutes += 24 * 60;
+    
+    return parseFloat((totalMinutes / 60).toFixed(2));
+  } catch (error) {
+    console.error("Error calculating hours:", { checkInTime, checkOutTime, error });
+    return 0;
+  }
 };
 
+// Helper function to check if driver is late
 const checkIsLate = (checkInTime, officeStartTime = "09:00") => {
   if (!checkInTime) return false;
   return checkInTime > officeStartTime;
 };
 
-const determineStatus = (totalHours, expectedHours = 8) => {
+// Helper function to determine status
+// Helper function to determine status
+const determineStatus = (totalHours, expectedHours = 9) => {
   if (totalHours === 0) return "Absent";
-  if (totalHours < expectedHours / 2) return "Half Day";
-  return "Present";
+  if (totalHours < expectedHours) return "Half Day";  // Less than 9 hours = Half Day
+  return "Present";  // 9 or more hours = Full Day
 };
 
-const getUserIdFromRequest = (req) => {
-  if (req.user && req.user._id) return req.user._id;
-  if (req.driver && req.driver._id) return req.driver._id;
-  if (req.admin && req.admin._id) return req.admin._id;
+// Helper to get driverId from request
+const getDriverIdFromRequest = (req) => {
+  // From protectDriver middleware - set req.driver
+  if (req.driver && req.driver._id) {
+    return req.driver._id;
+  }
+  
+  // From protectDriver middleware - set req.driverId
+  if (req.driverId) {
+    return req.driverId;
+  }
+  
+  // From other middleware - set req.user
+  if (req.user && req.user._id) {
+    return req.user._id;
+  }
+  
+  console.error("❌ No driver ID found in request:", {
+    hasDriver: !!req.driver,
+    hasDriverId: !!req.driverId,
+    hasUser: !!req.user
+  });
+  
   return null;
 };
-
-const isAdminUser = (req) => {
-  if (req.userType === "admin") return true;
-  if (req.admin) return true;
-  if (req.driver && req.driver.role === "admin") return true;
-  if (req.user && req.user.role === "admin") return true;
-  return false;
-};
-
-// ============ DRIVER CONTROLLERS ============
-
 // @desc    Punch In
 // @route   POST /api/attendance/punch-in
+// @access  Private (Drivers only)
 export const punchIn = async (req, res) => {
   try {
-    const userId = getUserIdFromRequest(req);
-    const isAdmin = isAdminUser(req);
+    const driverId = getDriverIdFromRequest(req);
+    
 
-    if (isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Admins cannot perform punch in/out operations",
-      });
-    }
 
-    if (!userId) {
+    
+    console.log("🔍 DEBUG - Full req object keys:", Object.keys(req));
+    console.log("🔍 DEBUG - req.driver:", req.driver);
+    console.log("🔍 DEBUG - req.driverId:", req.driverId);
+    console.log("🔍 DEBUG - driverId:", driverId);
+    console.log("🔍 DEBUG - driverId type:", typeof driverId);
+
+
+    if (!driverId) {
       return res.status(401).json({
         success: false,
         message: "User not authenticated",
@@ -77,7 +122,8 @@ export const punchIn = async (req, res) => {
       });
     }
 
-    let attendance = await Attendance.findOne({ driverId: userId, date: today });
+    // Check if attendance already exists for today
+    let attendance = await Attendance.findOne({ driverId, date: today });
 
     if (attendance && attendance.checkInTime) {
       return res.status(400).json({
@@ -91,7 +137,7 @@ export const punchIn = async (req, res) => {
 
     if (!attendance) {
       attendance = new Attendance({
-        driverId: userId,
+        driverId,
         date: today,
         checkInTime,
         checkInLocation,
@@ -127,19 +173,15 @@ export const punchIn = async (req, res) => {
 
 // @desc    Punch Out
 // @route   POST /api/attendance/punch-out
+// @access  Private (Drivers only)
+// @desc    Punch Out
+// @route   POST /api/attendance/punch-out
+// @access  Private (Drivers only)
 export const punchOut = async (req, res) => {
   try {
-    const userId = getUserIdFromRequest(req);
-    const isAdmin = isAdminUser(req);
-
-    if (isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Admins cannot perform punch out operations",
-      });
-    }
-
-    if (!userId) {
+    const driverId = getDriverIdFromRequest(req);
+    
+    if (!driverId) {
       return res.status(401).json({
         success: false,
         message: "User not authenticated",
@@ -156,7 +198,7 @@ export const punchOut = async (req, res) => {
       });
     }
 
-    const attendance = await Attendance.findOne({ driverId: userId, date: today });
+    const attendance = await Attendance.findOne({ driverId, date: today });
 
     if (!attendance) {
       return res.status(404).json({
@@ -179,7 +221,18 @@ export const punchOut = async (req, res) => {
       });
     }
 
-    const totalHours = calculateTotalHours(attendance.checkInTime, checkOutTime);
+    // Clean the check-in time if it has AM/PM
+    const cleanCheckInTime = attendance.checkInTime.replace(/\s*[AP]M$/i, '').trim();
+    const cleanCheckOutTime = checkOutTime.replace(/\s*[AP]M$/i, '').trim();
+    
+    console.log("Calculating hours:", { 
+      originalIn: attendance.checkInTime, 
+      cleanIn: cleanCheckInTime,
+      originalOut: checkOutTime,
+      cleanOut: cleanCheckOutTime
+    });
+    
+    const totalHours = calculateTotalHours(cleanCheckInTime, cleanCheckOutTime);
     const status = determineStatus(totalHours);
 
     attendance.checkOutTime = checkOutTime;
@@ -207,19 +260,12 @@ export const punchOut = async (req, res) => {
 
 // @desc    Get my attendance records
 // @route   GET /api/attendance/my-attendance
+// @access  Private (Drivers only)
 export const getMyAttendance = async (req, res) => {
   try {
-    const userId = getUserIdFromRequest(req);
-    const isAdmin = isAdminUser(req);
-
-    if (isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Admins cannot access this route. Use admin endpoints instead.",
-      });
-    }
-
-    if (!userId) {
+    const driverId = getDriverIdFromRequest(req);
+    
+    if (!driverId) {
       return res.status(401).json({
         success: false,
         message: "User not authenticated",
@@ -228,7 +274,7 @@ export const getMyAttendance = async (req, res) => {
 
     const { startDate, endDate, status, page = 1, limit = 10 } = req.query;
 
-    let query = { driverId: userId };
+    let query = { driverId };
 
     if (startDate && endDate) {
       query.date = { $gte: startDate, $lte: endDate };
@@ -275,19 +321,12 @@ export const getMyAttendance = async (req, res) => {
 
 // @desc    Get today's status
 // @route   GET /api/attendance/my-today-status
+// @access  Private (Drivers only)
 export const getTodayStatus = async (req, res) => {
   try {
-    const userId = getUserIdFromRequest(req);
-    const isAdmin = isAdminUser(req);
-
-    if (isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Admins cannot access this route",
-      });
-    }
-
-    if (!userId) {
+    const driverId = getDriverIdFromRequest(req);
+    
+    if (!driverId) {
       return res.status(401).json({
         success: false,
         message: "User not authenticated",
@@ -295,7 +334,7 @@ export const getTodayStatus = async (req, res) => {
     }
 
     const today = new Date().toISOString().split("T")[0];
-    const attendance = await Attendance.findOne({ driverId: userId, date: today });
+    const attendance = await Attendance.findOne({ driverId, date: today });
 
     if (!attendance) {
       return res.status(200).json({
@@ -332,108 +371,15 @@ export const getTodayStatus = async (req, res) => {
   }
 };
 
-// @desc    Get my monthly attendance report
-// @route   GET /api/attendance/my-monthly-report
-export const getMyMonthlyReport = async (req, res) => {
-  try {
-    const userId = getUserIdFromRequest(req);
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "User not authenticated",
-      });
-    }
-
-    const { year, month } = req.query;
-
-    // Validation
-    if (!year || !month) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide year and month (e.g., year=2026&month=07)",
-      });
-    }
-
-    // Month ka start aur end date
-    const startDate = `${year}-${month.padStart(2, "0")}-01`;
-    const endDate = new Date(year, parseInt(month), 0).toISOString().split("T")[0];
-
-    console.log(`Fetching attendance for: ${startDate} to ${endDate}`);
-
-    // Attendance records fetch karo
-    const attendanceRecords = await Attendance.find({
-      driverId: userId,
-      date: { $gte: startDate, $lte: endDate },
-    }).sort({ date: 1 });
-
-    console.log(`Found ${attendanceRecords.length} records`);
-
-    // Statistics calculate karo
-    const totalDays = attendanceRecords.length;
-    const present = attendanceRecords.filter((a) => a.status === "Present").length;
-    const absent = attendanceRecords.filter((a) => a.status === "Absent").length;
-    const halfDay = attendanceRecords.filter((a) => a.status === "Half Day").length;
-    const late = attendanceRecords.filter((a) => a.isLate === true).length;
-    const totalHours = attendanceRecords.reduce((sum, a) => sum + (a.totalHours || 0), 0);
-
-    // Total working days in month
-    const totalWorkingDays = new Date(year, parseInt(month), 0).getDate();
-    const attendedDays = present + halfDay;
-    const attendancePercentage = totalWorkingDays > 0 
-      ? ((attendedDays / totalWorkingDays) * 100).toFixed(2) 
-      : 0;
-
-    // Driver details
-    const driver = await Driver.findById(userId).select("driverName email phone carNumber");
-
-    res.status(200).json({
-      success: true,
-      data: {
-        driver: {
-          name: driver?.driverName || "Unknown",
-          email: driver?.email || "Unknown",
-          phone: driver?.phone || "Unknown",
-          carNumber: driver?.carNumber || "N/A",
-        },
-        month: `${month}/${year}`,
-        summary: {
-          totalWorkingDays,
-          totalPresent: present,
-          totalAbsent: absent,
-          totalHalfDay: halfDay,
-          totalLate: late,
-          totalHours: parseFloat(totalHours.toFixed(2)),
-          attendancePercentage: parseFloat(attendancePercentage),
-        },
-        dailyRecords: attendanceRecords.map((record) => ({
-          date: record.date,
-          checkInTime: record.checkInTime || "-",
-          checkOutTime: record.checkOutTime || "-",
-          totalHours: record.totalHours || 0,
-          status: record.status,
-          isLate: record.isLate,
-          isWithinOfficeRange: record.isWithinOfficeRange,
-        })),
-      },
-    });
-  } catch (error) {
-    console.error("Get My Monthly Report Error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error generating monthly report",
-      error: error.message,
-    });
-  }
-};
-// ============ ADMIN CONTROLLERS ============
+// ==================== ADMIN ONLY CONTROLLERS ====================
 
 // @desc    Get attendance by ID (Admin only)
-// @route   GET /api/attendance/admin/:id
+// @route   GET /api/attendance/:id
+// @access  Private/Admin
 export const getAttendanceById = async (req, res) => {
   try {
     const attendance = await Attendance.findById(req.params.id)
-      .populate("driverId", "driverName email phone")
+      .populate("driverId", "name email phone")
       .lean();
 
     if (!attendance) {
@@ -458,7 +404,8 @@ export const getAttendanceById = async (req, res) => {
 };
 
 // @desc    Get driver attendance (Admin only)
-// @route   GET /api/attendance/admin/driver/:driverId
+// @route   GET /api/attendance/driver/:driverId
+// @access  Private/Admin
 export const getDriverAttendance = async (req, res) => {
   try {
     const { driverId } = req.params;
@@ -485,7 +432,7 @@ export const getDriverAttendance = async (req, res) => {
         .sort({ date: -1 })
         .skip(skip)
         .limit(parseInt(limit))
-        .populate("driverId", "driverName email phone")
+        .populate("driverId", "name email phone")
         .lean(),
       Attendance.countDocuments(query),
     ]);
@@ -511,7 +458,8 @@ export const getDriverAttendance = async (req, res) => {
 };
 
 // @desc    Today's summary (Admin only)
-// @route   GET /api/attendance/admin/today-summary
+// @route   GET /api/attendance/summary/today
+// @access  Private/Admin
 export const getTodaySummary = async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
@@ -524,10 +472,10 @@ export const getTodaySummary = async (req, res) => {
     ]);
 
     const allRecords = await Attendance.find({ date: today })
-      .populate("driverId", "driverName email phone")
+      .populate("driverId", "name email phone")
       .lean();
 
-    const totalDrivers = await Driver.countDocuments({ status: "active" });
+    const totalDrivers = await DriverLogin.countDocuments({ isActive: true });
 
     res.status(200).json({
       success: true,
@@ -539,8 +487,7 @@ export const getTodaySummary = async (req, res) => {
           totalAbsent,
           totalLate,
           totalHalfDay,
-          attendancePercentage:
-            totalDrivers > 0 ? ((totalPresent / totalDrivers) * 100).toFixed(2) : 0,
+          attendancePercentage: totalDrivers > 0 ? ((totalPresent / totalDrivers) * 100).toFixed(2) : 0,
         },
         records: allRecords,
       },
@@ -555,128 +502,65 @@ export const getTodaySummary = async (req, res) => {
   }
 };
 
-// @desc    Admin monthly report
-// @route   GET /api/attendance/admin/monthly-report
-export const getAdminMonthlyReport = async (req, res) => {
+// @desc    Attendance by date range (Admin only)
+// @route   GET /api/attendance/range
+// @access  Private/Admin
+export const getAttendanceByDateRange = async (req, res) => {
   try {
-    const { year, month, driverId } = req.query;
+    const { startDate, endDate, status, driverId, page = 1, limit = 20 } = req.query;
 
-    if (!year || !month) {
+    if (!startDate || !endDate) {
       return res.status(400).json({
         success: false,
-        message: "Please provide year and month (e.g., year=2026&month=07)",
+        message: "Please provide startDate and endDate",
       });
     }
 
-    const startDate = `${year}-${month.padStart(2, "0")}-01`;
-    const endDate = new Date(year, parseInt(month), 0).toISOString().split("T")[0];
+    let query = { date: { $gte: startDate, $lte: endDate } };
 
-    let query = {
-      date: { $gte: startDate, $lte: endDate },
-    };
+    if (status) {
+      query.status = status;
+    }
 
     if (driverId) {
       query.driverId = new mongoose.Types.ObjectId(driverId);
     }
 
-    const attendanceRecords = await Attendance.find(query)
-      .populate("driverId", "driverName email phone carNumber")
-      .sort({ date: 1, driverId: 1 })
-      .lean();
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Group by driver
-    const groupedData = {};
-    attendanceRecords.forEach((record) => {
-      const driverIdStr = record.driverId._id.toString();
-      if (!groupedData[driverIdStr]) {
-        groupedData[driverIdStr] = {
-          driver: record.driverId,
-          records: [],
-        };
-      }
-      groupedData[driverIdStr].records.push(record);
-    });
-
-    const totalWorkingDays = new Date(year, parseInt(month), 0).getDate();
-
-    const driverReports = Object.values(groupedData).map((group) => {
-      const records = group.records;
-      const present = records.filter((r) => r.status === "Present").length;
-      const absent = records.filter((r) => r.status === "Absent").length;
-      const halfDay = records.filter((r) => r.status === "Half Day").length;
-      const late = records.filter((r) => r.isLate === true).length;
-      const totalHours = records.reduce((sum, r) => sum + (r.totalHours || 0), 0);
-      const attendedDays = present + halfDay;
-      const attendancePercentage =
-        totalWorkingDays > 0 ? ((attendedDays / totalWorkingDays) * 100).toFixed(2) : 0;
-
-      return {
-        driver: {
-          id: group.driver._id,
-          name: group.driver.driverName,
-          email: group.driver.email,
-          phone: group.driver.phone,
-          carNumber: group.driver.carNumber,
-        },
-        summary: {
-          totalPresent: present,
-          totalAbsent: absent,
-          totalHalfDay: halfDay,
-          totalLate: late,
-          totalHours: parseFloat(totalHours.toFixed(2)),
-          attendancePercentage: parseFloat(attendancePercentage),
-        },
-        dailyRecords: records.map((r) => ({
-          date: r.date,
-          checkInTime: r.checkInTime,
-          checkOutTime: r.checkOutTime,
-          totalHours: r.totalHours,
-          status: r.status,
-          isLate: r.isLate,
-        })),
-      };
-    });
-
-    // Overall summary
-    const totalPresentAll = attendanceRecords.filter((r) => r.status === "Present").length;
-    const totalAbsentAll = attendanceRecords.filter((r) => r.status === "Absent").length;
-    const totalHalfDayAll = attendanceRecords.filter((r) => r.status === "Half Day").length;
-    const totalLateAll = attendanceRecords.filter((r) => r.isLate === true).length;
-    const totalHoursAll = attendanceRecords.reduce((sum, r) => sum + (r.totalHours || 0), 0);
-    const totalDrivers = await Driver.countDocuments({ status: "active" });
-    const overallPercentage =
-      totalDrivers * totalWorkingDays > 0
-        ? ((totalPresentAll + totalHalfDayAll) / (totalDrivers * totalWorkingDays) * 100).toFixed(2)
-        : 0;
+    const [attendance, total] = await Promise.all([
+      Attendance.find(query)
+        .populate("driverId", "name email phone")
+        .sort({ date: -1, driverId: 1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Attendance.countDocuments(query),
+    ]);
 
     res.status(200).json({
       success: true,
-      data: {
-        month: `${month}/${year}`,
-        overallSummary: {
-          totalDrivers,
-          totalPresent: totalPresentAll,
-          totalAbsent: totalAbsentAll,
-          totalHalfDay: totalHalfDayAll,
-          totalLate: totalLateAll,
-          totalHours: parseFloat(totalHoursAll.toFixed(2)),
-          attendancePercentage: parseFloat(overallPercentage),
-        },
-        drivers: driverReports,
+      data: attendance,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit)),
       },
     });
   } catch (error) {
-    console.error("Get Admin Monthly Report Error:", error);
+    console.error("Get Attendance By Date Range Error:", error);
     res.status(500).json({
       success: false,
-      message: "Error generating admin monthly report",
+      message: "Error fetching attendance by date range",
       error: error.message,
     });
   }
 };
 
 // @desc    Update attendance (Admin only)
-// @route   PUT /api/attendance/admin/:id
+// @route   PUT /api/attendance/:id
+// @access  Private/Admin
 export const updateAttendance = async (req, res) => {
   try {
     const { id } = req.params;
@@ -702,7 +586,7 @@ export const updateAttendance = async (req, res) => {
       id,
       { $set: updates },
       { new: true, runValidators: true }
-    ).populate("driverId", "driverName email");
+    ).populate("driverId", "name email");
 
     if (!attendance) {
       return res.status(404).json({
@@ -727,7 +611,8 @@ export const updateAttendance = async (req, res) => {
 };
 
 // @desc    Delete attendance (Admin only)
-// @route   DELETE /api/attendance/admin/:id
+// @route   DELETE /api/attendance/:id
+// @access  Private/Admin
 export const deleteAttendance = async (req, res) => {
   try {
     const attendance = await Attendance.findByIdAndDelete(req.params.id);
@@ -748,6 +633,95 @@ export const deleteAttendance = async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Error deleting attendance",
+      error: error.message,
+    });
+  }
+};
+
+// @desc    Monthly report (Admin only)
+// @route   GET /api/attendance/report/monthly
+// @access  Private/Admin
+// @desc    Monthly report (Admin only)
+// @route   GET /api/attendance/report/monthly
+// @access  Private/Admin
+export const getMonthlyReport = async (req, res) => {
+  try {
+    const { year, month, driverId } = req.query;
+
+    if (!year || !month) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide year and month",
+      });
+    }
+
+    const startDate = `${year}-${month.padStart(2, "0")}-01`;
+    const endDate = new Date(year, month, 0).toISOString().split("T")[0];
+
+    let query = {
+      date: { $gte: startDate, $lte: endDate },
+    };
+
+    if (driverId) {
+      query.driverId = new mongoose.Types.ObjectId(driverId);
+    }
+
+    const attendance = await Attendance.find(query)
+      .populate("driverId", "name email phone")
+      .sort({ date: 1 })
+      .lean();
+
+    // Process records to ensure totalHours is calculated
+    const processedRecords = attendance.map(record => {
+      // Make a copy to avoid modifying the original
+      const processed = { ...record };
+      
+      // If totalHours is 0 but we have both check-in and check-out times, calculate it
+      if ((processed.totalHours === 0 || processed.totalHours === null) && 
+          processed.checkInTime && 
+          processed.checkOutTime) {
+        const calculatedHours = calculateTotalHours(processed.checkInTime, processed.checkOutTime);
+        processed.totalHours = calculatedHours;
+        // Update status if it doesn't match
+        const newStatus = determineStatus(calculatedHours);
+        if (newStatus !== processed.status) {
+          processed.status = newStatus;
+        }
+        console.log(`🔄 Recalculated hours for ${processed._id}: ${calculatedHours} hrs (was 0)`);
+      }
+      
+      return processed;
+    });
+
+    const stats = {
+      totalDays: processedRecords.length,
+      present: processedRecords.filter(a => a.status === "Present").length,
+      absent: processedRecords.filter(a => a.status === "Absent").length,
+      halfDay: processedRecords.filter(a => a.status === "Half Day").length,
+      late: processedRecords.filter(a => a.isLate).length,
+      totalHours: processedRecords.reduce((sum, a) => sum + (a.totalHours || 0), 0).toFixed(2),
+    };
+
+    let driverDetails = null;
+    if (driverId) {
+      driverDetails = await DriverLogin.findById(driverId).select("name email phone");
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        year,
+        month,
+        driver: driverDetails,
+        statistics: stats,
+        records: processedRecords,
+      },
+    });
+  } catch (error) {
+    console.error("Get Monthly Report Error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error generating monthly report",
       error: error.message,
     });
   }
