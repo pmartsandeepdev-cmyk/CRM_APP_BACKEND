@@ -45,7 +45,10 @@ export const protectDriver = async (req, res, next) => {
 
     // Verify token
     const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
-    console.log("✅ DECODED:", decoded);
+console.log("==============");
+console.log("TOKEN DRIVER:", decoded.id);
+console.log("EMAIL:", decoded.email);
+console.log("==============");
 
     // Find driver
     const driver = await Driver.findById(decoded.id);

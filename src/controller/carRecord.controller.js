@@ -57,48 +57,56 @@ export const createCarRecord = async (req, res) => {
     }
 
     // Create Car Record with driver
-    const carRecord = new CarRecord({
-      carNumber,
-      name,
-      staffName,
-      sector,
-      movementPurpose,
-      startroute,
-      endroute,
-      startReading,
-      endReading,
-      petrol,
-      visit,
-      startkm,
-      endkm,
-      maintenance,
-      driver: driverId, // ✅ Driver assigned
-      staff: staffId || null,
-      tripStatus: 'active',
-      startTime: new Date(),
-      date: new Date(),
-    });
+const carRecord = new CarRecord({
+  carNumber,
+  name,
+  staffName,
+  sector,
+  movementPurpose,
+  startroute,
+  endroute,
+  startReading,
+  endReading,
+  petrol,
+  visit,
+  startkm,
+  endkm,
+  maintenance,
+  driver: driverId,
+  staff: staffId || null,
+  tripStatus: "active",
+  startTime: new Date(),
+  date: new Date(),
+});
 
     await carRecord.save();
 
-    // Create Initial Location
-    let locationData = null;
-    if (latitude && longitude) {
-      locationData = new DriverLocation({
-        driver: driverId,
-        trip: carRecord._id,
-        latitude: latitude,
-        longitude: longitude,
-        isActive: true,
-        locationTimestamp: new Date(),
-        createdAt: new Date(),
-      });
-      await locationData.save();
+ // Create Initial Location
+let locationData = null;
 
-      carRecord.drivertrakinglocation = locationData._id;
-      await carRecord.save();
-    }
+console.log("📍 Latitude:", latitude);
+console.log("📍 Longitude:", longitude);
 
+if (latitude != null && longitude != null) {
+  locationData = new DriverLocation({
+    driver: driverId,
+    trip: carRecord._id,
+    latitude: Number(latitude),
+    longitude: Number(longitude),
+    isActive: true,
+    locationTimestamp: new Date(),
+    createdAt: new Date(),
+  });
+
+  await locationData.save();
+
+  carRecord.drivertrakinglocation = locationData._id;
+  await carRecord.save();
+
+  console.log("✅ Initial location saved");
+} else {
+  console.log("❌ Latitude/Longitude not received from frontend");
+}
     // Update Driver Status
     await Driver.findByIdAndUpdate(driverId, {
       status: 'active',
@@ -293,64 +301,44 @@ export const stopTrip = async (req, res) => {
 
 export const getActiveTrip = async (req, res) => {
   try {
-    const driverId = req.driver._id; // ✅ Driver ID from token
+    const driverId = req.driver._id;
 
-    console.log(`📤 Getting active trip for driver: ${driverId}`);
+    console.log("================================");
+    console.log("Logged Driver:", driverId.toString());
+    console.log("Email:", req.driver.email);
 
     const activeTrip = await CarRecord.findOne({
-      driver: driverId, // ✅ IMPORTANT: Sirf is driver ki active trip
-      tripStatus: 'active',
-    })
-      .populate({
-        path: 'driver',
-        select: 'driverName email vehicle status'
-      })
-      .populate({
-        path: 'staff',
-        select: 'name email phone'
-      })
-      .populate({
-        path: 'drivertrakinglocation',
-        select: 'latitude longitude speed heading accuracy createdAt'
-      })
-      .sort({ createdAt: -1 });
+      driver: driverId,
+      tripStatus: "active",
+    }).sort({ createdAt: -1 });
+
+    console.log("Trip Found:", activeTrip?._id);
+    console.log("Trip Driver:", activeTrip?.driver?.toString());
+    console.log("================================");
 
     if (!activeTrip) {
-      console.log(`ℹ️ No active trip found for driver ${driverId}`);
-      return res.status(200).json({
+      return res.json({
         success: true,
         data: null,
-        message: "No active trip found",
       });
     }
 
-    const latestLocation = await DriverLocation.findOne({
-      trip: activeTrip._id,
-    })
-      .sort({ createdAt: -1 })
-      .limit(1);
+const latestLocation = await DriverLocation.findOne({
+    trip: activeTrip._id
+});
 
-    console.log(`✅ Active trip found for driver ${driverId}`);
-
-    res.status(200).json({
+    return res.json({
       success: true,
       data: {
         trip: activeTrip,
         latestLocation,
-        isTracking: true,
+        isTracking: !!latestLocation,
       },
     });
-
-  } catch (error) {
-    console.error("Get active trip error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to get active trip",
-      error: error.message,
-    });
+  } catch (err) {
+    console.log(err);
   }
 };
-
 // ============ GET TRIP LOCATIONS ============
 export const getTripLocations = async (req, res) => {
   try {
@@ -1623,6 +1611,448 @@ export const debugLocationTrips = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message
+    });
+  }
+};
+
+
+
+
+
+
+
+
+
+
+
+// ============ END TRIP - HOME TRIP ============
+export const completeHomeTrip = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const driverId = req.driver._id;
+    const {
+      endroute,
+      endReading,
+      endkm,
+    } = req.body;
+
+    console.log(`🏠 Completing home trip: ${tripId}, driver: ${driverId}`);
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+      movementPurpose: { $in: ['movement', 'cng'] },
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Home trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Trip is already completed",
+      });
+    }
+
+    const endTime = new Date();
+    const startTime = trip.startTime || trip.createdAt;
+    const totalDuration = Math.round((endTime - startTime) / (1000 * 60));
+
+    const startKm = trip.startkm || trip.startReading || 0;
+    const endKm = endkm || endReading || 0;
+    const totalKm = Math.max(0, endKm - startKm);
+
+    const updatedTrip = await CarRecord.findByIdAndUpdate(
+      tripId,
+      {
+        $set: {
+          tripStatus: 'completed',
+          endTime: endTime,
+          totalDuration: totalDuration,
+          endroute: endroute || trip.endroute,
+          endReading: endReading || trip.endReading,
+          endkm: endkm || trip.endkm,
+          totalKm: totalKm,
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    // Deactivate locations
+    await DriverLocation.updateMany(
+      { trip: tripId, isActive: true },
+      { isActive: false }
+    );
+
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'offline',
+    });
+
+    await updatedTrip.populate([
+      {
+        path: "driver",
+        select: "driverName email profile vehicle license rc status role"
+      },
+      {
+        path: "staff",
+        select: "name email phone role createdAt"
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Home trip completed successfully",
+      data: {
+        trip: updatedTrip,
+        summary: {
+          totalDuration: `${totalDuration} minutes`,
+          totalDistance: totalKm,
+          startTime: startTime,
+          endTime: endTime,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Complete home trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to complete home trip",
+      error: error.message,
+    });
+  }
+};
+
+// ============ END TRIP - VISIT TRIP ============
+export const completeVisitTrip = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const driverId = req.driver._id;
+    const {
+      endroute,
+      endReading,
+      endkm,
+      visitNotes,
+      closeReadingHome,
+    } = req.body;
+
+    console.log(`🏢 Completing visit trip: ${tripId}, driver: ${driverId}`);
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+      movementPurpose: 'visit',
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Visit trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Trip is already completed",
+      });
+    }
+
+    const endTime = new Date();
+    const startTime = trip.startTime || trip.createdAt;
+    const totalDuration = Math.round((endTime - startTime) / (1000 * 60));
+
+    const startKm = trip.startkm || trip.startReading || 0;
+    const endKm = endkm || endReading || 0;
+    const totalKm = Math.max(0, endKm - startKm);
+
+    const updatedTrip = await CarRecord.findByIdAndUpdate(
+      tripId,
+      {
+        $set: {
+          tripStatus: 'completed',
+          endTime: endTime,
+          totalDuration: totalDuration,
+          endroute: endroute || trip.endroute,
+          endReading: endReading || trip.endReading,
+          endkm: endkm || trip.endkm,
+          totalKm: totalKm,
+          'visit.notes': visitNotes || trip.visit?.notes || '',
+          'visit.closeReadingHome': closeReadingHome || trip.visit?.closeReadingHome || endReading,
+          'visit.completedAt': endTime,
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    await DriverLocation.updateMany(
+      { trip: tripId, isActive: true },
+      { isActive: false }
+    );
+
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'offline',
+    });
+
+    await updatedTrip.populate([
+      {
+        path: "driver",
+        select: "driverName email profile vehicle license rc status role"
+      },
+      {
+        path: "staff",
+        select: "name email phone role createdAt"
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Visit trip completed successfully",
+      data: {
+        trip: updatedTrip,
+        summary: {
+          totalDuration: `${totalDuration} minutes`,
+          totalDistance: totalKm,
+          startTime: startTime,
+          endTime: endTime,
+          visitNotes: visitNotes || trip.visit?.notes,
+          closeReading: closeReadingHome || trip.visit?.closeReadingHome,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Complete visit trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to complete visit trip",
+      error: error.message,
+    });
+  }
+};
+
+// ============ END TRIP - PETROL TRIP ============
+export const completePetrolTrip = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const driverId = req.driver._id;
+    const {
+      endroute,
+      endReading,
+      endkm,
+      petrolEndReading,
+      petrolImages = [],
+    } = req.body;
+
+    console.log(`⛽ Completing petrol trip: ${tripId}, driver: ${driverId}`);
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+      movementPurpose: 'petrol',
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Petrol trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Trip is already completed",
+      });
+    }
+
+    const endTime = new Date();
+    const startTime = trip.startTime || trip.createdAt;
+    const totalDuration = Math.round((endTime - startTime) / (1000 * 60));
+
+    const startKm = trip.startkm || trip.startReading || 0;
+    const endKm = endkm || endReading || 0;
+    const totalKm = Math.max(0, endKm - startKm);
+
+    const updatedTrip = await CarRecord.findByIdAndUpdate(
+      tripId,
+      {
+        $set: {
+          tripStatus: 'completed',
+          endTime: endTime,
+          totalDuration: totalDuration,
+          endroute: endroute || trip.endroute,
+          endReading: endReading || trip.endReading,
+          endkm: endkm || trip.endkm,
+          totalKm: totalKm,
+          'petrol.endReading': petrolEndReading || endReading,
+          'petrol.images': petrolImages,
+          'petrol.completedAt': endTime,
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    await DriverLocation.updateMany(
+      { trip: tripId, isActive: true },
+      { isActive: false }
+    );
+
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'offline',
+    });
+
+    await updatedTrip.populate([
+      {
+        path: "driver",
+        select: "driverName email profile vehicle license rc status role"
+      },
+      {
+        path: "staff",
+        select: "name email phone role createdAt"
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Petrol trip completed successfully",
+      data: {
+        trip: updatedTrip,
+        summary: {
+          totalDuration: `${totalDuration} minutes`,
+          totalDistance: totalKm,
+          startTime: startTime,
+          endTime: endTime,
+          petrolEndReading: petrolEndReading || endReading,
+          images: petrolImages,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Complete petrol trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to complete petrol trip",
+      error: error.message,
+    });
+  }
+};
+
+// ============ END TRIP - MAINTENANCE TRIP ============
+export const completeMaintenanceTrip = async (req, res) => {
+  try {
+    const { tripId } = req.params;
+    const driverId = req.driver._id;
+    const {
+      endroute,
+      endReading,
+      endkm,
+      maintenanceReading,
+      maintenanceAmount,
+      workDetails,
+      maintenanceImages = [],
+    } = req.body;
+
+    console.log(`🔧 Completing maintenance trip: ${tripId}, driver: ${driverId}`);
+
+    const trip = await CarRecord.findOne({
+      _id: tripId,
+      driver: driverId,
+      movementPurpose: 'maintenance',
+    });
+
+    if (!trip) {
+      return res.status(404).json({
+        success: false,
+        message: "Maintenance trip not found or unauthorized",
+      });
+    }
+
+    if (trip.tripStatus === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Trip is already completed",
+      });
+    }
+
+    const endTime = new Date();
+    const startTime = trip.startTime || trip.createdAt;
+    const totalDuration = Math.round((endTime - startTime) / (1000 * 60));
+
+    const startKm = trip.startkm || trip.startReading || 0;
+    const endKm = endkm || endReading || 0;
+    const totalKm = Math.max(0, endKm - startKm);
+
+    const updatedTrip = await CarRecord.findByIdAndUpdate(
+      tripId,
+      {
+        $set: {
+          tripStatus: 'completed',
+          endTime: endTime,
+          totalDuration: totalDuration,
+          endroute: endroute || trip.endroute,
+          endReading: endReading || trip.endReading,
+          endkm: endkm || trip.endkm,
+          totalKm: totalKm,
+          'maintenance.reading': maintenanceReading || endReading,
+          'maintenance.amount': maintenanceAmount || trip.maintenance?.amount || 0,
+          'maintenance.workDetails': workDetails || trip.maintenance?.workDetails || '',
+          'maintenance.images': maintenanceImages,
+          'maintenance.completedAt': endTime,
+        }
+      },
+      { new: true, runValidators: true }
+    );
+
+    await DriverLocation.updateMany(
+      { trip: tripId, isActive: true },
+      { isActive: false }
+    );
+
+    await Driver.findByIdAndUpdate(driverId, {
+      status: 'offline',
+    });
+
+    await updatedTrip.populate([
+      {
+        path: "driver",
+        select: "driverName email profile vehicle license rc status role"
+      },
+      {
+        path: "staff",
+        select: "name email phone role createdAt"
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      message: "Maintenance trip completed successfully",
+      data: {
+        trip: updatedTrip,
+        summary: {
+          totalDuration: `${totalDuration} minutes`,
+          totalDistance: totalKm,
+          startTime: startTime,
+          endTime: endTime,
+          maintenanceReading: maintenanceReading || endReading,
+          maintenanceAmount: maintenanceAmount || trip.maintenance?.amount,
+          workDetails: workDetails || trip.maintenance?.workDetails,
+          images: maintenanceImages,
+        },
+      },
+    });
+
+  } catch (error) {
+    console.error("Complete maintenance trip error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to complete maintenance trip",
+      error: error.message,
     });
   }
 };

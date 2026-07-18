@@ -25,6 +25,10 @@ import {
   debugActiveTrips,
   debugLocationTrips,
   fixActiveTrips,
+  completeHomeTrip,
+  completeVisitTrip,
+  completePetrolTrip,
+  completeMaintenanceTrip,
 } from "../controller/carRecord.controller.js";
 
 const router = express.Router();
@@ -37,6 +41,25 @@ router.get("/active-trip", protectDriver, getActiveTrip);
 router.get("/my-trips", protectDriver, myRoutetripDriver);
 router.get("/trip-locations/:tripId", protectDriver, getTripLocations);
 router.get("/trip-route/:tripId", protectDriver, getTripRoute);
+
+
+
+
+
+// 1. Complete Home Trip (movement/CNG)
+router.put("/trip/:tripId/complete-home", protectDriver, completeHomeTrip);
+
+// 2. Complete Visit Trip (with notes and close reading)
+router.put("/trip/:tripId/complete-visit", protectDriver, completeVisitTrip);
+
+// 3. Complete Petrol Trip (with images)
+router.put("/trip/:tripId/complete-petrol", protectDriver, completePetrolTrip);
+
+// 4. Complete Maintenance Trip (with images)
+router.put("/trip/:tripId/complete-maintenance", protectDriver, completeMaintenanceTrip);
+
+
+
 
 // ============ DEBUG ROUTES (MUST BE BEFORE /:id) ============
 router.get("/debug/active-trips", debugActiveTrips);
@@ -65,5 +88,12 @@ router.get("/", getAllCarRecords);
 router.get("/:id", getCarRecordById);
 router.put("/:id", updateCarRecord);
 router.delete("/:id", deleteCarRecord);
+
+
+
+
+
+
+
 
 export default router;

@@ -464,18 +464,20 @@ export const getTodaySummary = async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
 
-    const [totalPresent, totalAbsent, totalLate, totalHalfDay] = await Promise.all([
-      Attendance.countDocuments({ date: today, status: "Present" }),
-      Attendance.countDocuments({ date: today, status: "Absent" }),
-      Attendance.countDocuments({ date: today, isLate: true }),
-      Attendance.countDocuments({ date: today, status: "Half Day" }),
-    ]);
+    const [totalPresent, totalAbsent, totalLate, totalHalfDay] =
+      await Promise.all([
+        Attendance.countDocuments({ date: today, status: "Present" }),
+        Attendance.countDocuments({ date: today, status: "Absent" }),
+        Attendance.countDocuments({ date: today, isLate: true }),
+        Attendance.countDocuments({ date: today, status: "Half Day" }),
+      ]);
 
     const allRecords = await Attendance.find({ date: today })
-      .populate("driverId", "name email phone")
+      .populate("driverId", "driverName email")
       .lean();
 
-    const totalDrivers = await DriverLogin.countDocuments({ isActive: true });
+    // Driver model use karo
+    const totalDrivers = await Driver.countDocuments();
 
     res.status(200).json({
       success: true,
@@ -487,7 +489,10 @@ export const getTodaySummary = async (req, res) => {
           totalAbsent,
           totalLate,
           totalHalfDay,
-          attendancePercentage: totalDrivers > 0 ? ((totalPresent / totalDrivers) * 100).toFixed(2) : 0,
+          attendancePercentage:
+            totalDrivers > 0
+              ? ((totalPresent / totalDrivers) * 100).toFixed(2)
+              : 0,
         },
         records: allRecords,
       },
